@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"sprouter"
+	"github.com/mayask/sprouter"
 )
 
 // Example 1: Simple POST with body validation

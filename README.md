@@ -1,166 +1,441 @@
 # Sprouter
 
-A type-safe HTTP router wrapper for Go that provides automatic validation of requests and responses using struct tags.
+A type-safe HTTP router for Go that provides automatic validation and parameter binding using struct tags. Built on top of [httprouter](https://github.com/julienschmidt/httprouter) for high performance.
 
 ## Features
 
-- **Type-safe handlers** with Go generics
-- **Automatic JSON parsing** and serialization
-- **Request validation** using `go-playground/validator` annotations
-- **Response validation** to ensure API contract compliance
-- **Multi-source parameter binding**: path params, query params, headers, and body
-- Built on top of `julienschmidt/httprouter` for high performance
+✨ **Type-safe handlers** using Go generics
+🔒 **Automatic request & response validation** via `go-playground/validator`
+🎯 **Multi-source parameter binding** - path, query, headers, and body in one struct
+🚀 **High performance** - powered by httprouter
+📝 **Self-documenting APIs** - request/response contracts visible in code
+🔄 **Automatic type conversion** - strings to int, float, bool, etc.
 
 ## Installation
 
 ```bash
-go get sprouter
+go get github.com/mayask/sprouter
 ```
 
 ## Quick Start
 
-### Simple POST with Body Validation
-
 ```go
+package main
+
+import (
+    "context"
+    "log"
+    "net/http"
+
+    "github.com/mayask/sprouter"
+)
+
 type CreateUserRequest struct {
-    Name  string `json:"name" validate:"required,min=3,max=50"`
+    Name  string `json:"name" validate:"required,min=3"`
     Email string `json:"email" validate:"required,email"`
-    Age   int    `json:"age" validate:"required,gte=18,lte=120"`
 }
 
 type CreateUserResponse struct {
-    ID      int    `json:"id" validate:"required,gt=0"`
-    Name    string `json:"name" validate:"required"`
-    Message string `json:"message" validate:"required"`
+    ID    int    `json:"id" validate:"required"`
+    Name  string `json:"name" validate:"required"`
+    Email string `json:"email" validate:"required"`
 }
 
-router := sprouter.New()
-sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
-    // Request is already validated!
-    return &CreateUserResponse{
-        ID:      123,
-        Name:    req.Name,
-        Message: "User created successfully",
-    }, nil
-})
+func main() {
+    router := sprouter.New()
+
+    sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+        // Request is already parsed and validated!
+        return &CreateUserResponse{
+            ID:    123,
+            Name:  req.Name,
+            Email: req.Email,
+        }, nil
+    })
+
+    log.Fatal(http.ListenAndServe(":8080", router))
+}
 ```
 
-### GET with Path, Query, and Header Parameters
+## Parameter Binding
+
+Sprouter can automatically extract and validate parameters from multiple sources using struct tags.
+
+### Path Parameters
+
+Extract dynamic segments from the URL path:
 
 ```go
 type GetUserRequest struct {
-    // Path parameter from URL /users/:id
-    UserID string `path:"id" validate:"required"`
-
-    // Query parameters from ?page=1&limit=10
-    Page  int `query:"page" validate:"omitempty,gte=1"`
-    Limit int `query:"limit" validate:"omitempty,gte=1,lte=100"`
-
-    // Header validation
-    AuthToken string `header:"Authorization" validate:"required"`
+    UserID string `path:"id" validate:"required,uuid4"`
 }
 
-type GetUserResponse struct {
-    UserID string `json:"user_id" validate:"required"`
-    Name   string `json:"name" validate:"required"`
-    Email  string `json:"email" validate:"required,email"`
-}
-
-sprouter.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
-    // All parameters are automatically parsed, validated, and type-converted!
-    return &GetUserResponse{
-        UserID: req.UserID,
-        Name:   "John Doe",
-        Email:  "john@example.com",
-    }, nil
+// Route: /users/:id
+sprouter.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+    // req.UserID contains the :id path parameter
+    return &UserResponse{ID: req.UserID}, nil
 })
 ```
 
-### PUT Combining Path, Headers, and Body
+### Query Parameters
+
+Extract and validate query string parameters with automatic type conversion:
+
+```go
+type SearchRequest struct {
+    Query  string `query:"q" validate:"required,min=1"`
+    Page   int    `query:"page" validate:"omitempty,gte=1"`
+    Limit  int    `query:"limit" validate:"omitempty,gte=1,lte=100"`
+    Active bool   `query:"active"`
+}
+
+// Route: /search?q=golang&page=2&limit=20&active=true
+sprouter.GET(router, "/search", func(ctx context.Context, req *SearchRequest) (*SearchResponse, error) {
+    // All query params are parsed and validated
+    return &SearchResponse{Results: []string{}}, nil
+})
+```
+
+### Headers
+
+Validate HTTP headers:
+
+```go
+type SecureRequest struct {
+    AuthToken string `header:"Authorization" validate:"required"`
+    UserAgent string `header:"User-Agent" validate:"required"`
+}
+
+sprouter.GET(router, "/secure", func(ctx context.Context, req *SecureRequest) (*Response, error) {
+    // Headers are validated
+    return &Response{Status: "ok"}, nil
+})
+```
+
+### Request Body
+
+Parse and validate JSON request bodies:
+
+```go
+type UpdateProfileRequest struct {
+    Name     string `json:"name" validate:"required,min=3,max=100"`
+    Bio      string `json:"bio" validate:"omitempty,max=500"`
+    Age      int    `json:"age" validate:"required,gte=18,lte=120"`
+    Website  string `json:"website" validate:"omitempty,url"`
+}
+
+sprouter.PUT(router, "/profile", func(ctx context.Context, req *UpdateProfileRequest) (*Response, error) {
+    // JSON body is parsed and validated
+    return &Response{Message: "Profile updated"}, nil
+})
+```
+
+### Combining Multiple Sources
+
+You can combine path, query, headers, and body in a single request struct:
 
 ```go
 type UpdateUserRequest struct {
     // Path parameter
-    UserID string `path:"id" validate:"required"`
+    UserID string `path:"id" validate:"required,uuid4"`
 
     // Header
-    AuthToken string `header:"Authorization" validate:"required"`
+    AuthToken string `header:"Authorization" validate:"required,startswith=Bearer "`
+
+    // Query parameters
+    Notify bool `query:"notify"`
 
     // JSON body fields
     Name  string `json:"name" validate:"required,min=3"`
     Email string `json:"email" validate:"required,email"`
+    Age   int    `json:"age" validate:"required,gte=18"`
 }
 
 type UpdateUserResponse struct {
     UserID  string `json:"user_id" validate:"required"`
     Name    string `json:"name" validate:"required"`
-    Message string `json:"message" validate:"required"`
+    Email   string `json:"email" validate:"required"`
+    Updated bool   `json:"updated" validate:"required"`
 }
 
 sprouter.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
+    // All parameters from different sources are available
     return &UpdateUserResponse{
         UserID:  req.UserID,
         Name:    req.Name,
-        Message: "User updated successfully",
+        Email:   req.Email,
+        Updated: true,
     }, nil
 })
 ```
 
-## Struct Tags
+## Validation
 
-### Request Parameter Sources
+Sprouter validates both requests **and** responses using [go-playground/validator](https://github.com/go-playground/validator) tags.
 
-- `path:"param_name"` - Extract from URL path parameters (e.g., `/users/:id`)
-- `query:"param_name"` - Extract from URL query string (e.g., `?page=1`)
-- `header:"Header-Name"` - Extract from HTTP headers
-- `json:"field_name"` - Extract from JSON request body
+### Common Validation Tags
 
-### Validation Tags
+```go
+type ExampleRequest struct {
+    // String validations
+    Name     string `validate:"required"`              // Must be present
+    Username string `validate:"required,min=3,max=20"` // Length constraints
+    Email    string `validate:"required,email"`        // Email format
+    URL      string `validate:"omitempty,url"`         // URL format (optional)
 
-Uses [go-playground/validator](https://github.com/go-playground/validator) syntax:
+    // Numeric validations
+    Age      int     `validate:"required,gte=18,lte=120"` // Range constraints
+    Price    float64 `validate:"required,gt=0"`            // Greater than
+    Quantity uint    `validate:"omitempty,lte=1000"`       // Less than or equal
 
-- `validate:"required"` - Field must be present
-- `validate:"email"` - Must be valid email
-- `validate:"min=3,max=50"` - String length constraints
-- `validate:"gte=1,lte=100"` - Numeric range constraints
-- `validate:"omitempty"` - Skip validation if empty
+    // Conditional validations
+    Password string `validate:"required_with=NewPassword,min=8"` // Required if NewPassword present
 
-## Supported Types
+    // Custom formats
+    UUID     string `validate:"required,uuid4"`         // UUID v4 format
+    Color    string `validate:"required,hexcolor"`      // Hex color
+    IP       string `validate:"required,ip"`            // IP address
+}
+```
 
-The framework automatically converts string parameters to the following types:
-- `string`
-- `int`, `int8`, `int16`, `int32`, `int64`
-- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
-- `float32`, `float64`
-- `bool`
+See the [validator documentation](https://pkg.go.dev/github.com/go-playground/validator/v10) for all available validation tags.
 
-## HTTP Methods
+## Supported HTTP Methods
 
-Supports all standard HTTP methods:
-- `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`
+All standard HTTP methods are supported:
 
-## Error Handling
+```go
+sprouter.GET(router, "/path", handler)
+sprouter.POST(router, "/path", handler)
+sprouter.PUT(router, "/path", handler)
+sprouter.PATCH(router, "/path", handler)
+sprouter.DELETE(router, "/path", handler)
+sprouter.HEAD(router, "/path", handler)
+sprouter.OPTIONS(router, "/path", handler)
+```
 
-The framework automatically returns appropriate HTTP status codes:
-- `400 Bad Request` - Invalid JSON, parameter parsing errors, or validation failures
-- `500 Internal Server Error` - Handler errors or response validation failures
+## Type Conversion
+
+Query parameters, path parameters, and headers are automatically converted from strings to the appropriate type:
+
+| Go Type | Supported |
+|---------|-----------|
+| `string` | ✅ |
+| `int`, `int8`, `int16`, `int32`, `int64` | ✅ |
+| `uint`, `uint8`, `uint16`, `uint32`, `uint64` | ✅ |
+| `float32`, `float64` | ✅ |
+| `bool` | ✅ |
+
+## Error Responses
+
+Sprouter automatically returns appropriate HTTP status codes:
+
+| Status Code | When |
+|-------------|------|
+| `400 Bad Request` | Invalid JSON, parameter parsing errors, or validation failures |
+| `500 Internal Server Error` | Handler errors or response validation failures |
+
+Example error response for validation failure:
+```
+Request validation failed: Key: 'CreateUserRequest.Email' Error:Field validation for 'Email' failed on the 'email' tag
+```
 
 ## Access to httprouter Features
 
-Since `Sprouter` embeds `*httprouter.Router`, you have full access to all httprouter features:
+Since `Sprouter` embeds `*httprouter.Router`, you have full access to all httprouter configuration and features:
 
 ```go
 router := sprouter.New()
 
 // Configure httprouter settings
 router.RedirectTrailingSlash = true
+router.RedirectFixedPath = true
 router.HandleMethodNotAllowed = true
+router.HandleOPTIONS = true
 
-// Use httprouter methods directly
-router.ServeFiles("/static/*filepath", http.Dir("./public"))
+// Set custom handlers
 router.NotFound = http.HandlerFunc(customNotFoundHandler)
+router.MethodNotAllowed = http.HandlerFunc(customMethodNotAllowedHandler)
+router.PanicHandler = customPanicHandler
+
+// Serve static files
+router.ServeFiles("/static/*filepath", http.Dir("./public"))
+
+// Use httprouter's native handlers for specific routes
+router.Handle("GET", "/raw", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+    w.Write([]byte("raw handler"))
+})
 ```
+
+## Complete Example
+
+Here's a more complete example showing various features:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/http"
+
+    "github.com/mayask/sprouter"
+)
+
+// List users with pagination
+type ListUsersRequest struct {
+    Page  int    `query:"page" validate:"omitempty,gte=1"`
+    Limit int    `query:"limit" validate:"omitempty,gte=1,lte=100"`
+    Token string `header:"Authorization" validate:"required"`
+}
+
+type ListUsersResponse struct {
+    Users []User `json:"users" validate:"required"`
+    Page  int    `json:"page" validate:"gte=1"`
+    Total int    `json:"total" validate:"gte=0"`
+}
+
+// Get specific user
+type GetUserRequest struct {
+    UserID string `path:"id" validate:"required,uuid4"`
+    Token  string `header:"Authorization" validate:"required"`
+}
+
+type UserResponse struct {
+    ID    string `json:"id" validate:"required"`
+    Name  string `json:"name" validate:"required"`
+    Email string `json:"email" validate:"required,email"`
+}
+
+// Create user
+type CreateUserRequest struct {
+    Name  string `json:"name" validate:"required,min=3,max=100"`
+    Email string `json:"email" validate:"required,email"`
+    Age   int    `json:"age" validate:"required,gte=18,lte=120"`
+}
+
+// Update user
+type UpdateUserRequest struct {
+    UserID string `path:"id" validate:"required,uuid4"`
+    Token  string `header:"Authorization" validate:"required"`
+    Name   string `json:"name" validate:"omitempty,min=3,max=100"`
+    Email  string `json:"email" validate:"omitempty,email"`
+}
+
+type User struct {
+    ID    string `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+func main() {
+    router := sprouter.New()
+
+    // List users with pagination
+    sprouter.GET(router, "/users", func(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
+        page := req.Page
+        if page == 0 {
+            page = 1
+        }
+        limit := req.Limit
+        if limit == 0 {
+            limit = 10
+        }
+
+        return &ListUsersResponse{
+            Users: []User{{ID: "1", Name: "John", Email: "john@example.com"}},
+            Page:  page,
+            Total: 1,
+        }, nil
+    })
+
+    // Get user by ID
+    sprouter.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+        return &UserResponse{
+            ID:    req.UserID,
+            Name:  "John Doe",
+            Email: "john@example.com",
+        }, nil
+    })
+
+    // Create new user
+    sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+        return &UserResponse{
+            ID:    "new-uuid",
+            Name:  req.Name,
+            Email: req.Email,
+        }, nil
+    })
+
+    // Update user
+    sprouter.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UserResponse, error) {
+        return &UserResponse{
+            ID:    req.UserID,
+            Name:  req.Name,
+            Email: req.Email,
+        }, nil
+    })
+
+    // Delete user
+    sprouter.DELETE(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+        return &UserResponse{
+            ID:    req.UserID,
+            Name:  "Deleted User",
+            Email: "deleted@example.com",
+        }, nil
+    })
+
+    fmt.Println("Server starting on :8080")
+    log.Fatal(http.ListenAndServe(":8080", router))
+}
+```
+
+## Testing
+
+Sprouter handlers are easy to test:
+
+```go
+func TestCreateUser(t *testing.T) {
+    router := sprouter.New()
+
+    sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+        return &UserResponse{
+            ID:    "123",
+            Name:  req.Name,
+            Email: req.Email,
+        }, nil
+    })
+
+    reqBody := CreateUserRequest{
+        Name:  "John Doe",
+        Email: "john@example.com",
+        Age:   30,
+    }
+    body, _ := json.Marshal(reqBody)
+
+    req := httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+    rec := httptest.NewRecorder()
+
+    router.ServeHTTP(rec, req)
+
+    assert.Equal(t, http.StatusOK, rec.Code)
+}
+```
+
+## Requirements
+
+- Go 1.18+ (for generics support)
+
+## Dependencies
+
+- [julienschmidt/httprouter](https://github.com/julienschmidt/httprouter) - High performance HTTP router
+- [go-playground/validator](https://github.com/go-playground/validator) - Struct and field validation
 
 ## License
 
 MIT
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
