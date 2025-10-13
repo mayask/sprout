@@ -4,12 +4,12 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 
 ## Features
 
-✨ **Type-safe handlers** using Go generics
-🔒 **Automatic request & response validation** via `go-playground/validator`
-🎯 **Multi-source parameter binding** - path, query, headers, and body in one struct
-🚀 **High performance** - powered by httprouter
-📝 **Self-documenting APIs** - request/response contracts visible in code
-🔄 **Automatic type conversion** - strings to int, float, bool, etc.
+- ✨ **Type-safe handlers** using Go generics
+- 🔒 **Automatic request & response validation** via `go-playground/validator`
+- 🎯 **Multi-source parameter binding** - path, query, headers, and body in one struct
+- 🚀 **High performance** - powered by httprouter
+- 📝 **Self-documenting APIs** - request/response contracts visible in code
+- 🔄 **Automatic type conversion** - strings to int, float, bool, etc.
 
 ## Installation
 
