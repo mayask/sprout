@@ -3,9 +3,11 @@ package sprouter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/julienschmidt/httprouter"
@@ -25,16 +27,94 @@ func New() *Sprouter {
 
 type Handle[Req, Resp any] func(context.Context, *Req) (*Resp, error)
 
+// setFieldValue sets a reflect.Value from a string value, handling type conversion
+func setFieldValue(fieldValue reflect.Value, value string) error {
+	if value == "" {
+		return nil // Skip empty values
+	}
+
+	switch fieldValue.Kind() {
+	case reflect.String:
+		fieldValue.SetString(value)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		intVal, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse int: %w", err)
+		}
+		fieldValue.SetInt(intVal)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		uintVal, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse uint: %w", err)
+		}
+		fieldValue.SetUint(uintVal)
+	case reflect.Float32, reflect.Float64:
+		floatVal, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse float: %w", err)
+		}
+		fieldValue.SetFloat(floatVal)
+	case reflect.Bool:
+		boolVal, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("failed to parse bool: %w", err)
+		}
+		fieldValue.SetBool(boolVal)
+	default:
+		return fmt.Errorf("unsupported field type: %s", fieldValue.Kind())
+	}
+
+	return nil
+}
+
 func wrap[Req, Resp any](s *Sprouter, handle Handle[Req, Resp]) httprouter.Handle {
 	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
 		ctx := req.Context()
 
-		// Parse request body into the typed DTO
+		// Parse request into the typed DTO
 		var reqDTO Req
-		reqType := reflect.TypeOf(reqDTO)
+		reqValue := reflect.ValueOf(&reqDTO).Elem()
+		reqType := reqValue.Type()
 
-		// Only parse body if it's not an empty struct
-		if req.Body != nil && reqType.Kind() == reflect.Struct && reqType.NumField() > 0 {
+		// Iterate through struct fields and populate from different sources
+		for i := 0; i < reqType.NumField(); i++ {
+			field := reqType.Field(i)
+			fieldValue := reqValue.Field(i)
+
+			if !fieldValue.CanSet() {
+				continue
+			}
+
+			// Handle path parameters
+			if pathTag := field.Tag.Get("path"); pathTag != "" {
+				paramValue := ps.ByName(pathTag)
+				if err := setFieldValue(fieldValue, paramValue); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid path parameter '%s': %v", pathTag, err), http.StatusBadRequest)
+					return
+				}
+			}
+
+			// Handle query parameters
+			if queryTag := field.Tag.Get("query"); queryTag != "" {
+				queryValue := req.URL.Query().Get(queryTag)
+				if err := setFieldValue(fieldValue, queryValue); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid query parameter '%s': %v", queryTag, err), http.StatusBadRequest)
+					return
+				}
+			}
+
+			// Handle headers
+			if headerTag := field.Tag.Get("header"); headerTag != "" {
+				headerValue := req.Header.Get(headerTag)
+				if err := setFieldValue(fieldValue, headerValue); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid header '%s': %v", headerTag, err), http.StatusBadRequest)
+					return
+				}
+			}
+		}
+
+		// Parse JSON body into struct (excluding tagged fields)
+		if req.Body != nil && req.ContentLength > 0 {
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -47,13 +127,13 @@ func wrap[Req, Resp any](s *Sprouter, handle Handle[Req, Resp]) httprouter.Handl
 					http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 					return
 				}
-
-				// Validate request DTO
-				if err := s.validate.Struct(reqDTO); err != nil {
-					http.Error(w, "Request validation failed: "+err.Error(), http.StatusBadRequest)
-					return
-				}
 			}
+		}
+
+		// Validate request DTO
+		if err := s.validate.Struct(reqDTO); err != nil {
+			http.Error(w, "Request validation failed: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 
 		// Call the handler
