@@ -1,4 +1,4 @@
-# Sprout
+# sprout
 
 A type-safe HTTP router for Go that provides automatic validation and parameter binding using struct tags. Built on top of [httprouter](https://github.com/julienschmidt/httprouter) for high performance.
 
