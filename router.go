@@ -1,4 +1,4 @@
-package sprouter
+package sprout
 
 import (
 	"context"
@@ -13,13 +13,13 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
-type Sprouter struct {
+type Sprout struct {
 	*httprouter.Router
 	validate *validator.Validate
 }
 
-func New() *Sprouter {
-	return &Sprouter{
+func New() *Sprout {
+	return &Sprout{
 		Router:   httprouter.New(),
 		validate: validator.New(),
 	}
@@ -67,7 +67,7 @@ func setFieldValue(fieldValue reflect.Value, value string) error {
 	return nil
 }
 
-func wrap[Req, Resp any](s *Sprouter, handle Handle[Req, Resp]) httprouter.Handle {
+func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp]) httprouter.Handle {
 	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
 		ctx := req.Context()
 
@@ -162,36 +162,36 @@ func wrap[Req, Resp any](s *Sprouter, handle Handle[Req, Resp]) httprouter.Handl
 }
 
 // GET is a shortcut for router.Handle(http.MethodGet, path, handle)
-func GET[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func GET[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodGet, path, wrap(s, handle))
 }
 
 // HEAD is a shortcut for router.Handle(http.MethodHead, path, handle)
-func HEAD[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func HEAD[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodHead, path, wrap(s, handle))
 }
 
 // OPTIONS is a shortcut for router.Handle(http.MethodOptions, path, handle)
-func OPTIONS[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func OPTIONS[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodOptions, path, wrap(s, handle))
 }
 
 // POST is a shortcut for router.Handle(http.MethodPost, path, handle)
-func POST[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func POST[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodPost, path, wrap(s, handle))
 }
 
 // PUT is a shortcut for router.Handle(http.MethodPut, path, handle)
-func PUT[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func PUT[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodPut, path, wrap(s, handle))
 }
 
 // PATCH is a shortcut for router.Handle(http.MethodPatch, path, handle)
-func PATCH[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func PATCH[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodPatch, path, wrap(s, handle))
 }
 
 // DELETE is a shortcut for router.Handle(http.MethodDelete, path, handle)
-func DELETE[Req, Resp any](s *Sprouter, path string, handle Handle[Req, Resp]) {
+func DELETE[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
 	s.Router.Handle(http.MethodDelete, path, wrap(s, handle))
 }

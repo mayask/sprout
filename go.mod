@@ -1,4 +1,4 @@
-module github.com/mayask/sprouter
+module github.com/mayask/sprout
 
 go 1.25.1
 

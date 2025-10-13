@@ -1,4 +1,4 @@
-package sprouter
+package sprout
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ type HelloResponse struct {
 	Message string `json:"message" validate:"required"`
 }
 
-func TestSprouterBasic(t *testing.T) {
+func TestSproutBasic(t *testing.T) {
 	router := New()
 	GET(router, "/", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
 		return &HelloResponse{Message: "Hello, World!"}, nil
@@ -49,7 +49,7 @@ type CreateUserResponse struct {
 	Email string `json:"email" validate:"required,email"`
 }
 
-func TestSprouterWithValidation(t *testing.T) {
+func TestSproutWithValidation(t *testing.T) {
 	router := New()
 	POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
 		return &CreateUserResponse{
@@ -83,7 +83,7 @@ func TestSprouterWithValidation(t *testing.T) {
 	}
 }
 
-func TestSprouterValidationFailure(t *testing.T) {
+func TestSproutValidationFailure(t *testing.T) {
 	router := New()
 	POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
 		return &CreateUserResponse{
@@ -123,7 +123,7 @@ type GetUserResponse struct {
 	AuthToken string `json:"auth_token" validate:"required"`
 }
 
-func TestSprouterWithPathQueryHeaders(t *testing.T) {
+func TestSproutWithPathQueryHeaders(t *testing.T) {
 	router := New()
 	GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
 		return &GetUserResponse{
@@ -164,7 +164,7 @@ func TestSprouterWithPathQueryHeaders(t *testing.T) {
 	}
 }
 
-func TestSprouterMissingRequiredHeader(t *testing.T) {
+func TestSproutMissingRequiredHeader(t *testing.T) {
 	router := New()
 	GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
 		return &GetUserResponse{
@@ -201,7 +201,7 @@ type UpdateUserResponse struct {
 	Message string `json:"message" validate:"required"`
 }
 
-func TestSprouterWithBodyAndParams(t *testing.T) {
+func TestSproutWithBodyAndParams(t *testing.T) {
 	router := New()
 	PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
 		return &UpdateUserResponse{

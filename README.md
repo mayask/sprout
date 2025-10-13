@@ -1,4 +1,4 @@
-# Sprouter
+# Sprout
 
 A type-safe HTTP router for Go that provides automatic validation and parameter binding using struct tags. Built on top of [httprouter](https://github.com/julienschmidt/httprouter) for high performance.
 
@@ -14,7 +14,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 ## Installation
 
 ```bash
-go get github.com/mayask/sprouter
+go get github.com/mayask/sprout
 ```
 
 ## Quick Start
@@ -27,7 +27,7 @@ import (
     "log"
     "net/http"
 
-    "github.com/mayask/sprouter"
+    "github.com/mayask/sprout"
 )
 
 type CreateUserRequest struct {
@@ -42,9 +42,9 @@ type CreateUserResponse struct {
 }
 
 func main() {
-    router := sprouter.New()
+    router := sprout.New()
 
-    sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+    sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
         // Request is already parsed and validated!
         return &CreateUserResponse{
             ID:    123,
@@ -59,7 +59,7 @@ func main() {
 
 ## Parameter Binding
 
-Sprouter can automatically extract and validate parameters from multiple sources using struct tags.
+Sprout can automatically extract and validate parameters from multiple sources using struct tags.
 
 ### Path Parameters
 
@@ -71,7 +71,7 @@ type GetUserRequest struct {
 }
 
 // Route: /users/:id
-sprouter.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
     // req.UserID contains the :id path parameter
     return &UserResponse{ID: req.UserID}, nil
 })
@@ -90,7 +90,7 @@ type SearchRequest struct {
 }
 
 // Route: /search?q=golang&page=2&limit=20&active=true
-sprouter.GET(router, "/search", func(ctx context.Context, req *SearchRequest) (*SearchResponse, error) {
+sprout.GET(router, "/search", func(ctx context.Context, req *SearchRequest) (*SearchResponse, error) {
     // All query params are parsed and validated
     return &SearchResponse{Results: []string{}}, nil
 })
@@ -106,7 +106,7 @@ type SecureRequest struct {
     UserAgent string `header:"User-Agent" validate:"required"`
 }
 
-sprouter.GET(router, "/secure", func(ctx context.Context, req *SecureRequest) (*Response, error) {
+sprout.GET(router, "/secure", func(ctx context.Context, req *SecureRequest) (*Response, error) {
     // Headers are validated
     return &Response{Status: "ok"}, nil
 })
@@ -124,7 +124,7 @@ type UpdateProfileRequest struct {
     Website  string `json:"website" validate:"omitempty,url"`
 }
 
-sprouter.PUT(router, "/profile", func(ctx context.Context, req *UpdateProfileRequest) (*Response, error) {
+sprout.PUT(router, "/profile", func(ctx context.Context, req *UpdateProfileRequest) (*Response, error) {
     // JSON body is parsed and validated
     return &Response{Message: "Profile updated"}, nil
 })
@@ -158,7 +158,7 @@ type UpdateUserResponse struct {
     Updated bool   `json:"updated" validate:"required"`
 }
 
-sprouter.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
+sprout.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
     // All parameters from different sources are available
     return &UpdateUserResponse{
         UserID:  req.UserID,
@@ -171,7 +171,7 @@ sprouter.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequ
 
 ## Validation
 
-Sprouter validates both requests **and** responses using [go-playground/validator](https://github.com/go-playground/validator) tags.
+Sprout validates both requests **and** responses using [go-playground/validator](https://github.com/go-playground/validator) tags.
 
 ### Common Validation Tags
 
@@ -205,13 +205,13 @@ See the [validator documentation](https://pkg.go.dev/github.com/go-playground/va
 All standard HTTP methods are supported:
 
 ```go
-sprouter.GET(router, "/path", handler)
-sprouter.POST(router, "/path", handler)
-sprouter.PUT(router, "/path", handler)
-sprouter.PATCH(router, "/path", handler)
-sprouter.DELETE(router, "/path", handler)
-sprouter.HEAD(router, "/path", handler)
-sprouter.OPTIONS(router, "/path", handler)
+sprout.GET(router, "/path", handler)
+sprout.POST(router, "/path", handler)
+sprout.PUT(router, "/path", handler)
+sprout.PATCH(router, "/path", handler)
+sprout.DELETE(router, "/path", handler)
+sprout.HEAD(router, "/path", handler)
+sprout.OPTIONS(router, "/path", handler)
 ```
 
 ## Type Conversion
@@ -228,7 +228,7 @@ Query parameters, path parameters, and headers are automatically converted from 
 
 ## Error Responses
 
-Sprouter automatically returns appropriate HTTP status codes:
+Sprout automatically returns appropriate HTTP status codes:
 
 | Status Code | When |
 |-------------|------|
@@ -242,10 +242,10 @@ Request validation failed: Key: 'CreateUserRequest.Email' Error:Field validation
 
 ## Access to httprouter Features
 
-Since `Sprouter` embeds `*httprouter.Router`, you have full access to all httprouter configuration and features:
+Since `Sprout` embeds `*httprouter.Router`, you have full access to all httprouter configuration and features:
 
 ```go
-router := sprouter.New()
+router := sprout.New()
 
 // Configure httprouter settings
 router.RedirectTrailingSlash = true
@@ -280,7 +280,7 @@ import (
     "log"
     "net/http"
 
-    "github.com/mayask/sprouter"
+    "github.com/mayask/sprout"
 )
 
 // List users with pagination
@@ -330,10 +330,10 @@ type User struct {
 }
 
 func main() {
-    router := sprouter.New()
+    router := sprout.New()
 
     // List users with pagination
-    sprouter.GET(router, "/users", func(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
+    sprout.GET(router, "/users", func(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
         page := req.Page
         if page == 0 {
             page = 1
@@ -351,7 +351,7 @@ func main() {
     })
 
     // Get user by ID
-    sprouter.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+    sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
         return &UserResponse{
             ID:    req.UserID,
             Name:  "John Doe",
@@ -360,7 +360,7 @@ func main() {
     })
 
     // Create new user
-    sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+    sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
         return &UserResponse{
             ID:    "new-uuid",
             Name:  req.Name,
@@ -369,7 +369,7 @@ func main() {
     })
 
     // Update user
-    sprouter.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UserResponse, error) {
+    sprout.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UserResponse, error) {
         return &UserResponse{
             ID:    req.UserID,
             Name:  req.Name,
@@ -378,7 +378,7 @@ func main() {
     })
 
     // Delete user
-    sprouter.DELETE(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+    sprout.DELETE(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
         return &UserResponse{
             ID:    req.UserID,
             Name:  "Deleted User",
@@ -393,13 +393,13 @@ func main() {
 
 ## Testing
 
-Sprouter handlers are easy to test:
+Sprout handlers are easy to test:
 
 ```go
 func TestCreateUser(t *testing.T) {
-    router := sprouter.New()
+    router := sprout.New()
 
-    sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+    sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
         return &UserResponse{
             ID:    "123",
             Name:  req.Name,

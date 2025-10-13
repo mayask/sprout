@@ -1,4 +1,4 @@
-package sprouter_test
+package sprout_test
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/mayask/sprouter"
+	"github.com/mayask/sprout"
 )
 
 // Example 1: Simple POST with body validation
@@ -63,10 +63,10 @@ type UpdateUserResponse struct {
 }
 
 func Example() {
-	router := sprouter.New()
+	router := sprout.New()
 
 	// POST /users - Create user with body validation
-	sprouter.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
 		return &CreateUserResponse{
 			ID:      123,
 			Name:    req.Name,
@@ -76,7 +76,7 @@ func Example() {
 	})
 
 	// GET /users/:id - Get user with path, query, and header validation
-	sprouter.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+	sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
 		// All parameters are validated and parsed!
 		return &GetUserResponse{
 			UserID: req.UserID,
@@ -86,7 +86,7 @@ func Example() {
 	})
 
 	// PUT /users/:id - Update user with path, header, and body validation
-	sprouter.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
+	sprout.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
 		return &UpdateUserResponse{
 			UserID:  req.UserID,
 			Name:    req.Name,
