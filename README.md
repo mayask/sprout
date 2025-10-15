@@ -133,11 +133,53 @@ sprout.PUT(router, "/profile", func(ctx context.Context, req *UpdateProfileReque
 })
 ```
 
-### Combining Multiple Sources
+#### Nested Objects in Request Body
 
-You can combine path, query, headers, and body in a single request struct:
+Sprout supports nested objects with full validation:
 
 ```go
+type Address struct {
+    Street  string `json:"street" validate:"required"`
+    City    string `json:"city" validate:"required"`
+    ZipCode string `json:"zip_code" validate:"required,len=5"`
+    Country string `json:"country" validate:"required,len=2"` // ISO country code
+}
+
+type CreateUserRequest struct {
+    Name    string  `json:"name" validate:"required,min=3"`
+    Email   string  `json:"email" validate:"required,email"`
+    Address Address `json:"address" validate:"required"`
+}
+
+// Example JSON payload:
+// {
+//   "name": "John Doe",
+//   "email": "john@example.com",
+//   "address": {
+//     "street": "123 Main St",
+//     "city": "New York",
+//     "zip_code": "10001",
+//     "country": "US"
+//   }
+// }
+
+sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+    // Nested objects are automatically parsed and validated
+    return &UserResponse{ID: "123", Name: req.Name}, nil
+})
+```
+
+### Combining Multiple Sources
+
+You can combine path, query, headers, and body (including nested objects) in a single request struct:
+
+```go
+type Address struct {
+    Street  string `json:"street" validate:"required"`
+    City    string `json:"city" validate:"required"`
+    ZipCode string `json:"zip_code" validate:"required"`
+}
+
 type UpdateUserRequest struct {
     // Path parameter
     UserID string `path:"id" validate:"required,uuid4"`
@@ -148,25 +190,28 @@ type UpdateUserRequest struct {
     // Query parameters
     Notify bool `query:"notify"`
 
-    // JSON body fields
-    Name  string `json:"name" validate:"required,min=3"`
-    Email string `json:"email" validate:"required,email"`
-    Age   int    `json:"age" validate:"required,gte=18"`
+    // JSON body fields (including nested objects)
+    Name    string  `json:"name" validate:"required,min=3"`
+    Email   string  `json:"email" validate:"required,email"`
+    Age     int     `json:"age" validate:"required,gte=18"`
+    Address Address `json:"address" validate:"required"`
 }
 
 type UpdateUserResponse struct {
-    UserID  string `json:"user_id" validate:"required"`
-    Name    string `json:"name" validate:"required"`
-    Email   string `json:"email" validate:"required"`
-    Updated bool   `json:"updated" validate:"required"`
+    UserID  string  `json:"user_id" validate:"required"`
+    Name    string  `json:"name" validate:"required"`
+    Email   string  `json:"email" validate:"required"`
+    Address Address `json:"address" validate:"required"`
+    Updated bool    `json:"updated" validate:"required"`
 }
 
 sprout.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UpdateUserResponse, error) {
-    // All parameters from different sources are available
+    // All parameters from different sources are available, including nested objects
     return &UpdateUserResponse{
         UserID:  req.UserID,
         Name:    req.Name,
         Email:   req.Email,
+        Address: req.Address,
         Updated: true,
     }, nil
 })
@@ -427,7 +472,7 @@ router.Handle("GET", "/raw", func(w http.ResponseWriter, r *http.Request, _ http
 
 ## Complete Example
 
-Here's a more complete example showing various features:
+Here's a more complete example showing various features, including nested objects:
 
 ```go
 package main
@@ -440,6 +485,20 @@ import (
 
     "github.com/mayask/sprout"
 )
+
+// Nested types
+type Address struct {
+    Street  string `json:"street" validate:"required"`
+    City    string `json:"city" validate:"required"`
+    ZipCode string `json:"zip_code" validate:"required,len=5"`
+    Country string `json:"country" validate:"required,len=2"`
+}
+
+type Preferences struct {
+    Language     string `json:"language" validate:"required,oneof=en es fr de"`
+    Timezone     string `json:"timezone" validate:"required"`
+    Notifications bool   `json:"notifications"`
+}
 
 // List users with pagination
 type ListUsersRequest struct {
@@ -461,30 +520,38 @@ type GetUserRequest struct {
 }
 
 type UserResponse struct {
-    ID    string `json:"id" validate:"required"`
-    Name  string `json:"name" validate:"required"`
-    Email string `json:"email" validate:"required,email"`
+    ID          string      `json:"id" validate:"required"`
+    Name        string      `json:"name" validate:"required"`
+    Email       string      `json:"email" validate:"required,email"`
+    Address     Address     `json:"address" validate:"required"`
+    Preferences Preferences `json:"preferences" validate:"required"`
 }
 
-// Create user
+// Create user with nested objects
 type CreateUserRequest struct {
-    Name  string `json:"name" validate:"required,min=3,max=100"`
-    Email string `json:"email" validate:"required,email"`
-    Age   int    `json:"age" validate:"required,gte=18,lte=120"`
+    Name        string      `json:"name" validate:"required,min=3,max=100"`
+    Email       string      `json:"email" validate:"required,email"`
+    Age         int         `json:"age" validate:"required,gte=18,lte=120"`
+    Address     Address     `json:"address" validate:"required"`
+    Preferences Preferences `json:"preferences" validate:"required"`
 }
 
 // Update user
 type UpdateUserRequest struct {
-    UserID string `path:"id" validate:"required,uuid4"`
-    Token  string `header:"Authorization" validate:"required"`
-    Name   string `json:"name" validate:"omitempty,min=3,max=100"`
-    Email  string `json:"email" validate:"omitempty,email"`
+    UserID      string       `path:"id" validate:"required,uuid4"`
+    Token       string       `header:"Authorization" validate:"required"`
+    Name        string       `json:"name" validate:"omitempty,min=3,max=100"`
+    Email       string       `json:"email" validate:"omitempty,email"`
+    Address     *Address     `json:"address" validate:"omitempty"`     // Optional update
+    Preferences *Preferences `json:"preferences" validate:"omitempty"` // Optional update
 }
 
 type User struct {
-    ID    string `json:"id"`
-    Name  string `json:"name"`
-    Email string `json:"email"`
+    ID          string      `json:"id"`
+    Name        string      `json:"name"`
+    Email       string      `json:"email"`
+    Address     Address     `json:"address"`
+    Preferences Preferences `json:"preferences"`
 }
 
 func main() {
@@ -502,37 +569,87 @@ func main() {
         }
 
         return &ListUsersResponse{
-            Users: []User{{ID: "1", Name: "John", Email: "john@example.com"}},
+            Users: []User{{
+                ID:    "1",
+                Name:  "John",
+                Email: "john@example.com",
+                Address: Address{
+                    Street:  "123 Main St",
+                    City:    "New York",
+                    ZipCode: "10001",
+                    Country: "US",
+                },
+                Preferences: Preferences{
+                    Language:      "en",
+                    Timezone:      "America/New_York",
+                    Notifications: true,
+                },
+            }},
             Page:  page,
             Total: 1,
         }, nil
     })
 
-    // Get user by ID
+    // Get user by ID with nested objects
     sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
         return &UserResponse{
             ID:    req.UserID,
             Name:  "John Doe",
             Email: "john@example.com",
+            Address: Address{
+                Street:  "123 Main St",
+                City:    "New York",
+                ZipCode: "10001",
+                Country: "US",
+            },
+            Preferences: Preferences{
+                Language:      "en",
+                Timezone:      "America/New_York",
+                Notifications: true,
+            },
         }, nil
     })
 
-    // Create new user
+    // Create new user with nested objects
     sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
         return &UserResponse{
-            ID:    "new-uuid",
-            Name:  req.Name,
-            Email: req.Email,
+            ID:          "new-uuid",
+            Name:        req.Name,
+            Email:       req.Email,
+            Address:     req.Address,     // Nested object from request
+            Preferences: req.Preferences, // Nested object from request
         }, nil
     })
 
-    // Update user
+    // Update user (partial update with optional nested objects)
     sprout.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserRequest) (*UserResponse, error) {
-        return &UserResponse{
+        // Start with existing user data
+        response := &UserResponse{
             ID:    req.UserID,
             Name:  req.Name,
             Email: req.Email,
-        }, nil
+            Address: Address{
+                Street:  "123 Main St",
+                City:    "New York",
+                ZipCode: "10001",
+                Country: "US",
+            },
+            Preferences: Preferences{
+                Language:      "en",
+                Timezone:      "America/New_York",
+                Notifications: true,
+            },
+        }
+
+        // Update nested objects if provided
+        if req.Address != nil {
+            response.Address = *req.Address
+        }
+        if req.Preferences != nil {
+            response.Preferences = *req.Preferences
+        }
+
+        return response, nil
     })
 
     // Delete user
@@ -541,6 +658,17 @@ func main() {
             ID:    req.UserID,
             Name:  "Deleted User",
             Email: "deleted@example.com",
+            Address: Address{
+                Street:  "",
+                City:    "",
+                ZipCode: "",
+                Country: "",
+            },
+            Preferences: Preferences{
+                Language:      "en",
+                Timezone:      "UTC",
+                Notifications: false,
+            },
         }, nil
     })
 

@@ -273,3 +273,112 @@ func Example_withResponseHeaders() {
 
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
+
+// Example with nested objects
+// Nested objects are fully supported in requests and responses
+
+// Nested type definitions
+type Address struct {
+	Street  string `json:"street" validate:"required"`
+	City    string `json:"city" validate:"required"`
+	ZipCode string `json:"zip_code" validate:"required,len=5"`
+	Country string `json:"country" validate:"required,len=2"` // ISO country code
+}
+
+type Preferences struct {
+	Language      string `json:"language" validate:"required,oneof=en es fr de"`
+	Timezone      string `json:"timezone" validate:"required"`
+	Notifications bool   `json:"notifications"`
+}
+
+type CreateUserWithNestedRequest struct {
+	Name        string      `json:"name" validate:"required,min=3,max=50"`
+	Email       string      `json:"email" validate:"required,email"`
+	Age         int         `json:"age" validate:"required,gte=18,lte=120"`
+	Address     Address     `json:"address" validate:"required"`
+	Preferences Preferences `json:"preferences" validate:"required"`
+}
+
+type UserWithNestedResponse struct {
+	ID          int         `json:"id" validate:"required,gt=0"`
+	Name        string      `json:"name" validate:"required"`
+	Email       string      `json:"email" validate:"required,email"`
+	Address     Address     `json:"address" validate:"required"`
+	Preferences Preferences `json:"preferences" validate:"required"`
+	Message     string      `json:"message" validate:"required"`
+}
+
+func Example_withNestedObjects() {
+	router := sprout.New()
+
+	// POST /users - Create user with nested objects
+	// Example request:
+	// {
+	//   "name": "John Doe",
+	//   "email": "john@example.com",
+	//   "age": 30,
+	//   "address": {
+	//     "street": "123 Main St",
+	//     "city": "New York",
+	//     "zip_code": "10001",
+	//     "country": "US"
+	//   },
+	//   "preferences": {
+	//     "language": "en",
+	//     "timezone": "America/New_York",
+	//     "notifications": true
+	//   }
+	// }
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserWithNestedRequest) (*UserWithNestedResponse, error) {
+		// All nested objects are parsed and validated automatically
+		return &UserWithNestedResponse{
+			ID:          123,
+			Name:        req.Name,
+			Email:       req.Email,
+			Address:     req.Address,     // Nested object from request
+			Preferences: req.Preferences, // Nested object from request
+			Message:     fmt.Sprintf("User %s created at %s, %s", req.Name, req.Address.City, req.Address.Country),
+		}, nil
+	})
+
+	// GET /users/:id - Get user with nested objects in response
+	sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserWithNestedResponse, error) {
+		return &UserWithNestedResponse{
+			ID:    123,
+			Name:  "John Doe",
+			Email: "john@example.com",
+			Address: Address{
+				Street:  "123 Main St",
+				City:    "New York",
+				ZipCode: "10001",
+				Country: "US",
+			},
+			Preferences: Preferences{
+				Language:      "en",
+				Timezone:      "America/New_York",
+				Notifications: true,
+			},
+			Message: "User retrieved successfully",
+		}, nil
+		// Response automatically serializes nested objects:
+		// {
+		//   "id": 123,
+		//   "name": "John Doe",
+		//   "email": "john@example.com",
+		//   "address": {
+		//     "street": "123 Main St",
+		//     "city": "New York",
+		//     "zip_code": "10001",
+		//     "country": "US"
+		//   },
+		//   "preferences": {
+		//     "language": "en",
+		//     "timezone": "America/New_York",
+		//     "notifications": true
+		//   },
+		//   "message": "User retrieved successfully"
+		// }
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}

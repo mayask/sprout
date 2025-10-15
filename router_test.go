@@ -1021,3 +1021,331 @@ func TestJSONAutoExclusionAllFieldsExcluded(t *testing.T) {
 		t.Errorf("expected empty JSON object {}, got %v", result)
 	}
 }
+
+// Test nested request objects
+type Address struct {
+	Street  string `json:"street" validate:"required"`
+	City    string `json:"city" validate:"required"`
+	ZipCode string `json:"zip_code" validate:"required,len=5"`
+}
+
+type CreateUserWithAddressRequest struct {
+	Name    string  `json:"name" validate:"required,min=3"`
+	Email   string  `json:"email" validate:"required,email"`
+	Address Address `json:"address" validate:"required"`
+}
+
+type CreateUserWithAddressResponse struct {
+	ID      int     `json:"id" validate:"required,gt=0"`
+	Name    string  `json:"name" validate:"required"`
+	Address Address `json:"address" validate:"required"`
+}
+
+func TestNestedRequestObjects(t *testing.T) {
+	router := New()
+	POST(router, "/users", func(ctx context.Context, req *CreateUserWithAddressRequest) (*CreateUserWithAddressResponse, error) {
+		return &CreateUserWithAddressResponse{
+			ID:      1,
+			Name:    req.Name,
+			Address: req.Address,
+		}, nil
+	})
+
+	// Valid nested request
+	reqBody := map[string]interface{}{
+		"name":  "John Doe",
+		"email": "john@example.com",
+		"address": map[string]string{
+			"street":   "123 Main St",
+			"city":     "New York",
+			"zip_code": "10001",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", bytes.NewReader(body)))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var resp CreateUserWithAddressResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.ID != 1 {
+		t.Errorf("expected ID 1, got %d", resp.ID)
+	}
+	if resp.Address.City != "New York" {
+		t.Errorf("expected City 'New York', got '%s'", resp.Address.City)
+	}
+}
+
+func TestNestedRequestValidationFailure(t *testing.T) {
+	router := New()
+	POST(router, "/users", func(ctx context.Context, req *CreateUserWithAddressRequest) (*CreateUserWithAddressResponse, error) {
+		return &CreateUserWithAddressResponse{
+			ID:      1,
+			Name:    req.Name,
+			Address: req.Address,
+		}, nil
+	})
+
+	// Invalid nested request (invalid zip code)
+	reqBody := map[string]interface{}{
+		"name":  "John Doe",
+		"email": "john@example.com",
+		"address": map[string]string{
+			"street":   "123 Main St",
+			"city":     "New York",
+			"zip_code": "123", // Invalid: must be 5 digits
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", bytes.NewReader(body)))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("expected status BadRequest, got %d", recorder.Code)
+	}
+}
+
+// Test nested response objects
+type ContactInfo struct {
+	Email string `json:"email" validate:"required,email"`
+	Phone string `json:"phone" validate:"required"`
+}
+
+type UserDetailResponse struct {
+	_       struct{}    `http:"status=200"`
+	UserID  string      `json:"user_id" validate:"required"`
+	Name    string      `json:"name" validate:"required"`
+	Contact ContactInfo `json:"contact" validate:"required"`
+}
+
+func TestNestedResponseObjects(t *testing.T) {
+	router := New()
+	GET(router, "/users/:id", func(ctx context.Context, req *EmptyRequest) (*UserDetailResponse, error) {
+		return &UserDetailResponse{
+			UserID: "user-123",
+			Name:   "John Doe",
+			Contact: ContactInfo{
+				Email: "john@example.com",
+				Phone: "+1234567890",
+			},
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/users/123", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Verify nested contact object exists
+	contact, ok := result["contact"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'contact' to be an object, got %T", result["contact"])
+	}
+
+	// Verify email and phone are present
+	if email, exists := contact["email"]; !exists || email != "john@example.com" {
+		t.Errorf("expected email 'john@example.com', got '%v'", email)
+	}
+	if phone, exists := contact["phone"]; !exists || phone != "+1234567890" {
+		t.Errorf("expected phone '+1234567890', got '%v'", phone)
+	}
+}
+
+// Test deeply nested structures
+type Metadata struct {
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Version   int    `json:"version"`
+}
+
+type FullAddress struct {
+	Street   string   `json:"street"`
+	City     string   `json:"city"`
+	Metadata Metadata `json:"metadata"`
+}
+
+type ComplexUserResponse struct {
+	ID      int         `json:"id"`
+	Name    string      `json:"name"`
+	Address FullAddress `json:"address"`
+}
+
+func TestDeeplyNestedStructures(t *testing.T) {
+	router := New()
+	GET(router, "/complex", func(ctx context.Context, req *EmptyRequest) (*ComplexUserResponse, error) {
+		return &ComplexUserResponse{
+			ID:   1,
+			Name: "Test User",
+			Address: FullAddress{
+				Street: "123 Main St",
+				City:   "New York",
+				Metadata: Metadata{
+					CreatedAt: "2024-01-01",
+					UpdatedAt: "2024-01-02",
+					Version:   1,
+				},
+			},
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/complex", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Navigate to deeply nested metadata
+	address, ok := result["address"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'address' to be an object")
+	}
+
+	metadata, ok := address["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'metadata' to be an object")
+	}
+
+	// Verify nested fields are present and correct
+	if createdAt, exists := metadata["created_at"]; !exists || createdAt != "2024-01-01" {
+		t.Errorf("expected created_at '2024-01-01', got '%v'", createdAt)
+	}
+	if version, exists := metadata["version"]; !exists || version != float64(1) {
+		t.Errorf("expected version 1, got '%v'", version)
+	}
+}
+
+// Test arrays of nested objects
+type Item struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type ItemListResponse struct {
+	Items []Item `json:"items"`
+	Count int    `json:"count"`
+}
+
+func TestArrayOfNestedObjects(t *testing.T) {
+	router := New()
+	GET(router, "/items", func(ctx context.Context, req *EmptyRequest) (*ItemListResponse, error) {
+		return &ItemListResponse{
+			Items: []Item{
+				{ID: 1, Name: "Item 1"},
+				{ID: 2, Name: "Item 2"},
+			},
+			Count: 2,
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/items", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	items, ok := result["items"].([]interface{})
+	if !ok {
+		t.Fatalf("expected 'items' to be an array")
+	}
+
+	if len(items) != 2 {
+		t.Errorf("expected 2 items, got %d", len(items))
+	}
+
+	// Check first item
+	item1, ok := items[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected item to be an object")
+	}
+
+	if id, exists := item1["id"]; !exists || id != float64(1) {
+		t.Errorf("expected id 1, got '%v'", id)
+	}
+	if name, exists := item1["name"]; !exists || name != "Item 1" {
+		t.Errorf("expected name 'Item 1', got '%v'", name)
+	}
+}
+
+// Test nested error objects
+type ErrorDetails struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+type DetailedError struct {
+	_       struct{}     `http:"status=400"`
+	Type    string       `json:"type"`
+	Details ErrorDetails `json:"details"`
+}
+
+func (e DetailedError) Error() string { return e.Type }
+
+func TestNestedErrorObjects(t *testing.T) {
+	router := New()
+	POST(router, "/validate", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, DetailedError{
+			Type: "validation_error",
+			Details: ErrorDetails{
+				Field:   "email",
+				Message: "invalid email format",
+			},
+		}
+	}, WithErrors(DetailedError{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/validate", nil))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", recorder.Code)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Verify type field is present
+	if typ, exists := result["type"]; !exists || typ != "validation_error" {
+		t.Errorf("expected type 'validation_error', got '%v'", typ)
+	}
+
+	// Verify nested details object
+	details, ok := result["details"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'details' to be an object")
+	}
+
+	if field, exists := details["field"]; !exists || field != "email" {
+		t.Errorf("expected field 'email', got '%v'", field)
+	}
+	if message, exists := details["message"]; !exists || message != "invalid email format" {
+		t.Errorf("expected message 'invalid email format', got '%v'", message)
+	}
+}

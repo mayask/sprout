@@ -149,7 +149,8 @@ func shouldExcludeFromJSON(field reflect.StructField) bool {
 	return false
 }
 
-// toJSONMap converts a struct to a map, excluding fields with routing tags
+// toJSONMap converts a struct to a map, excluding top-level fields with routing tags
+// Nested objects are included as-is (routing tags only matter at the top level)
 func toJSONMap(v interface{}) map[string]interface{} {
 	result := make(map[string]interface{})
 
@@ -163,7 +164,7 @@ func toJSONMap(v interface{}) map[string]interface{} {
 		field := typ.Field(i)
 		fieldValue := val.Field(i)
 
-		// Skip fields that should be excluded
+		// Skip fields that should be excluded (only checks top-level tags)
 		if shouldExcludeFromJSON(field) {
 			continue
 		}
@@ -185,6 +186,7 @@ func toJSONMap(v interface{}) map[string]interface{} {
 			}
 		}
 
+		// Include the field value as-is (nested structs handled by json.Encoder)
 		result[jsonName] = fieldValue.Interface()
 	}
 
