@@ -292,7 +292,7 @@ Request validation failed: Key: 'CreateUserRequest.Email' Error:Field validation
 
 ### Typed Error Responses
 
-For more control over error responses, implement the `HTTPError` interface and use struct tags to define status codes:
+For more control over error responses, define error types with struct tags for status codes:
 
 ```go
 // Define a typed error with status code in struct tag

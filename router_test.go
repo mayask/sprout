@@ -246,7 +246,7 @@ func TestSproutWithBodyAndParams(t *testing.T) {
 	}
 }
 
-// Test error handling with HTTPError interface
+// Test error handling with typed errors
 
 type NotFoundError struct {
 	_        struct{} `http:"status=404"`
@@ -281,7 +281,7 @@ func (e ValidationError) Error() string {
 func TestSproutHTTPError(t *testing.T) {
 	router := New()
 
-	// Register handler with expected errors
+	// Register handler with expected error types
 	POST(router, "/items", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
 		// Simulate not found error
 		if req.Name == "notfound" {
