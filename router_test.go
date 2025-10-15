@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -414,7 +415,7 @@ func TestErrorResponseValidation(t *testing.T) {
 		t.Errorf("expected status 500 (validation failed), got %d", recorder.Code)
 	}
 
-	if !bytes.Contains(recorder.Body.Bytes(), []byte("Error response validation failed")) {
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("error response validation failed")) {
 		t.Errorf("expected validation error message, got: %s", recorder.Body.String())
 	}
 }
@@ -1347,5 +1348,294 @@ func TestNestedErrorObjects(t *testing.T) {
 	}
 	if message, exists := details["message"]; !exists || message != "invalid email format" {
 		t.Errorf("expected message 'invalid email format', got '%v'", message)
+	}
+}
+
+// Test custom error handler functionality
+func TestCustomErrorHandler(t *testing.T) {
+	var capturedError error
+	var capturedWriter http.ResponseWriter
+	var capturedRequest *http.Request
+
+	config := &Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			capturedError = err
+			capturedWriter = w
+			capturedRequest = r
+
+			// Return custom JSON error response
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTeapot) // Use 418 to distinguish from default
+			json.NewEncoder(w).Encode(map[string]string{
+				"custom_error": "true",
+				"message":      err.Error(),
+			})
+		},
+	}
+
+	router := NewWithConfig(config)
+
+	// Test handler that triggers validation error
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:    1,
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	})
+
+	// Invalid request (name too short) - should trigger validation error
+	reqBody := CreateUserRequest{
+		Name:  "Jo",
+		Email: "john@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	httpReq := httptest.NewRequest("POST", "/test", bytes.NewReader(body))
+	router.ServeHTTP(recorder, httpReq)
+
+	// Verify custom error handler was called
+	if capturedError == nil {
+		t.Fatal("expected error handler to be called")
+	}
+
+	if capturedWriter == nil {
+		t.Error("expected ResponseWriter to be passed to error handler")
+	}
+
+	if capturedRequest == nil {
+		t.Error("expected Request to be passed to error handler")
+	}
+
+	// Verify custom status code
+	if recorder.Code != http.StatusTeapot {
+		t.Errorf("expected status 418 (custom), got %d", recorder.Code)
+	}
+
+	// Verify custom response body
+	var resp map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["custom_error"] != "true" {
+		t.Errorf("expected custom_error 'true', got '%s'", resp["custom_error"])
+	}
+}
+
+// Test error kinds with custom handler
+func TestCustomErrorHandlerWithErrorKinds(t *testing.T) {
+	tests := []struct {
+		name          string
+		setup         func(*Sprout)
+		request       func() *http.Request
+		expectedKind  ErrorKind
+		expectedError string
+	}{
+		{
+			name: "ParseError",
+			setup: func(s *Sprout) {
+				GET(s, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+					return &GetUserResponse{
+						UserID:    req.UserID,
+						Page:      req.Page,
+						Limit:     req.Limit,
+						AuthToken: req.AuthToken,
+					}, nil
+				})
+			},
+			request: func() *http.Request {
+				// Invalid query param (page should be int)
+				return httptest.NewRequest("GET", "/users/123?page=invalid&limit=10", nil)
+			},
+			expectedKind:  ErrorKindParse,
+			expectedError: "invalid query parameter 'page'",
+		},
+		{
+			name: "ValidationError",
+			setup: func(s *Sprout) {
+				POST(s, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+					return &CreateUserResponse{
+						ID:    1,
+						Name:  req.Name,
+						Email: req.Email,
+					}, nil
+				})
+			},
+			request: func() *http.Request {
+				// Invalid body (name too short)
+				reqBody := CreateUserRequest{
+					Name:  "Jo",
+					Email: "john@example.com",
+				}
+				body, _ := json.Marshal(reqBody)
+				return httptest.NewRequest("POST", "/users", bytes.NewReader(body))
+			},
+			expectedKind:  ErrorKindValidation,
+			expectedError: "request validation failed",
+		},
+		{
+			name: "ResponseValidationError",
+			setup: func(s *Sprout) {
+				GET(s, "/invalid-response", func(ctx context.Context, req *EmptyRequest) (*CreateUserResponse, error) {
+					// Return response with invalid ID (must be > 0)
+					return &CreateUserResponse{
+						ID:    -1, // Invalid!
+						Name:  "Test",
+						Email: "test@example.com",
+					}, nil
+				})
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest("GET", "/invalid-response", nil)
+			},
+			expectedKind:  ErrorKindResponseValidation,
+			expectedError: "response validation failed",
+		},
+		{
+			name: "ErrorValidationError",
+			setup: func(s *Sprout) {
+				GET(s, "/invalid-error", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+					// Return error with missing required field
+					return nil, NotFoundError{
+						Resource: "user",
+						Message:  "", // Invalid! Message is required
+					}
+				}, WithErrors(NotFoundError{}))
+			},
+			request: func() *http.Request {
+				return httptest.NewRequest("GET", "/invalid-error", nil)
+			},
+			expectedKind:  ErrorKindErrorValidation,
+			expectedError: "error response validation failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedError error
+
+			config := &Config{
+				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+					capturedError = err
+					w.WriteHeader(http.StatusTeapot)
+				},
+			}
+
+			router := NewWithConfig(config)
+			tt.setup(router)
+
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, tt.request())
+
+			if capturedError == nil {
+				t.Fatal("expected error handler to be called")
+			}
+
+			// Extract Error using errors.As
+			var sproutErr *Error
+			if !errors.As(capturedError, &sproutErr) {
+				t.Fatalf("expected *Error, got %T", capturedError)
+			}
+
+			if sproutErr.Kind != tt.expectedKind {
+				t.Errorf("expected kind %s, got %s", tt.expectedKind, sproutErr.Kind)
+			}
+
+			if !bytes.Contains([]byte(sproutErr.Message), []byte(tt.expectedError)) {
+				t.Errorf("expected error message to contain '%s', got '%s'", tt.expectedError, sproutErr.Message)
+			}
+
+			// Verify custom status code was used
+			if recorder.Code != http.StatusTeapot {
+				t.Errorf("expected status 418 (custom handler), got %d", recorder.Code)
+			}
+		})
+	}
+}
+
+// Test default error handling (no custom handler)
+func TestDefaultErrorHandling(t *testing.T) {
+	router := New() // No custom config
+
+	// Test handler that triggers validation error
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:    1,
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	})
+
+	// Invalid request (name too short)
+	reqBody := CreateUserRequest{
+		Name:  "Jo",
+		Email: "john@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+	// Default handler should return 400 for validation errors
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", recorder.Code)
+	}
+
+	// Default handler returns plain text error
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("validation_error")) {
+		t.Logf("Response body: %s", recorder.Body.String())
+	}
+}
+
+// Test unwrapping Error
+func TestErrorUnwrap(t *testing.T) {
+	underlyingErr := errors.New("underlying error")
+	sproutErr := &Error{
+		Kind:    ErrorKindParse,
+		Message: "parse failed",
+		Err:     underlyingErr,
+	}
+
+	unwrapped := sproutErr.Unwrap()
+	if unwrapped != underlyingErr {
+		t.Errorf("expected unwrapped error to be %v, got %v", underlyingErr, unwrapped)
+	}
+}
+
+// Test Error string formatting
+func TestErrorString(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      *Error
+		expected string
+	}{
+		{
+			name: "WithUnderlyingError",
+			err: &Error{
+				Kind:    ErrorKindValidation,
+				Message: "validation failed",
+				Err:     errors.New("field 'name' is required"),
+			},
+			expected: "validation_error: validation failed: field 'name' is required",
+		},
+		{
+			name: "WithoutUnderlyingError",
+			err: &Error{
+				Kind:    ErrorKindParse,
+				Message: "parse failed",
+			},
+			expected: "parse_error: parse failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.err.Error()
+			if result != tt.expected {
+				t.Errorf("expected '%s', got '%s'", tt.expected, result)
+			}
+		})
 	}
 }

@@ -18,12 +18,33 @@ import (
 type Sprout struct {
 	*httprouter.Router
 	validate *validator.Validate
+	config   *Config
 }
 
+// Config holds configuration options for customizing Sprout's behavior.
+type Config struct {
+	// ErrorHandler is called when Sprout encounters system errors (parse, validation, etc.).
+	// If nil, Sprout uses default error handling with appropriate HTTP status codes.
+	//
+	// The error parameter will be of type *Error, which can be extracted using errors.As().
+	// This provides access to ErrorKind for categorizing errors and returning custom responses.
+	ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
+}
+
+// New creates a new Sprout router with default configuration
 func New() *Sprout {
+	return NewWithConfig(nil)
+}
+
+// NewWithConfig creates a new Sprout router with custom configuration
+func NewWithConfig(config *Config) *Sprout {
+	if config == nil {
+		config = &Config{}
+	}
 	return &Sprout{
 		Router:   httprouter.New(),
 		validate: validator.New(),
+		config:   config,
 	}
 }
 
@@ -255,7 +276,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			if pathTag := field.Tag.Get("path"); pathTag != "" {
 				paramValue := ps.ByName(pathTag)
 				if err := setFieldValue(fieldValue, paramValue); err != nil {
-					http.Error(w, fmt.Sprintf("Invalid path parameter '%s': %v", pathTag, err), http.StatusBadRequest)
+					handleError(s, w, req, &Error{
+						Kind:    ErrorKindParse,
+						Message: fmt.Sprintf("invalid path parameter '%s'", pathTag),
+						Err:     err,
+					})
 					return
 				}
 			}
@@ -264,7 +289,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			if queryTag := field.Tag.Get("query"); queryTag != "" {
 				queryValue := req.URL.Query().Get(queryTag)
 				if err := setFieldValue(fieldValue, queryValue); err != nil {
-					http.Error(w, fmt.Sprintf("Invalid query parameter '%s': %v", queryTag, err), http.StatusBadRequest)
+					handleError(s, w, req, &Error{
+						Kind:    ErrorKindParse,
+						Message: fmt.Sprintf("invalid query parameter '%s'", queryTag),
+						Err:     err,
+					})
 					return
 				}
 			}
@@ -273,7 +302,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			if headerTag := field.Tag.Get("header"); headerTag != "" {
 				headerValue := req.Header.Get(headerTag)
 				if err := setFieldValue(fieldValue, headerValue); err != nil {
-					http.Error(w, fmt.Sprintf("Invalid header '%s': %v", headerTag, err), http.StatusBadRequest)
+					handleError(s, w, req, &Error{
+						Kind:    ErrorKindParse,
+						Message: fmt.Sprintf("invalid header '%s'", headerTag),
+						Err:     err,
+					})
 					return
 				}
 			}
@@ -283,14 +316,22 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 		if req.Body != nil && req.ContentLength > 0 {
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
-				http.Error(w, "Failed to read request body", http.StatusBadRequest)
+				handleError(s, w, req, &Error{
+					Kind:    ErrorKindParse,
+					Message: "failed to read request body",
+					Err:     err,
+				})
 				return
 			}
 			defer req.Body.Close()
 
 			if len(body) > 0 {
 				if err := json.Unmarshal(body, &reqDTO); err != nil {
-					http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+					handleError(s, w, req, &Error{
+						Kind:    ErrorKindParse,
+						Message: "invalid JSON",
+						Err:     err,
+					})
 					return
 				}
 			}
@@ -298,7 +339,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 
 		// Validate request DTO
 		if err := s.validate.Struct(reqDTO); err != nil {
-			http.Error(w, "Request validation failed: "+err.Error(), http.StatusBadRequest)
+			handleError(s, w, req, &Error{
+				Kind:    ErrorKindValidation,
+				Message: "request validation failed",
+				Err:     err,
+			})
 			return
 		}
 
@@ -328,9 +373,13 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			// Try to handle error using HTTPError interface
 			if _, ok := err.(HTTPError); ok {
 				// Validate error response body
-				if err := s.validate.Struct(err); err != nil {
-					log.Printf("ERROR: error response validation failed: %v", err)
-					http.Error(w, "Error response validation failed: "+err.Error(), http.StatusInternalServerError)
+				if validationErr := s.validate.Struct(err); validationErr != nil {
+					log.Printf("ERROR: error response validation failed: %v", validationErr)
+					handleError(s, w, req, &Error{
+						Kind:    ErrorKindErrorValidation,
+						Message: "error response validation failed",
+						Err:     validationErr,
+					})
 					return
 				}
 
@@ -364,7 +413,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 		// Validate response DTO
 		if respDTO != nil {
 			if err := s.validate.Struct(respDTO); err != nil {
-				http.Error(w, "Response validation failed: "+err.Error(), http.StatusInternalServerError)
+				handleError(s, w, req, &Error{
+					Kind:    ErrorKindResponseValidation,
+					Message: "response validation failed",
+					Err:     err,
+				})
 				return
 			}
 		}

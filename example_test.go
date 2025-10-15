@@ -2,6 +2,8 @@ package sprout_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -381,4 +383,116 @@ func Example_withNestedObjects() {
 	})
 
 	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+// Example with custom error handler
+// This shows how to customize system error responses (parsing, validation, etc.)
+func Example_withCustomErrorHandler() {
+	// Define custom error handler
+	config := &sprout.Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// Extract sprout.Error for detailed error information
+			var sproutErr *sprout.Error
+			if errors.As(err, &sproutErr) {
+				// Return structured JSON error response
+				w.Header().Set("Content-Type", "application/json")
+
+				// Determine status code based on error kind
+				status := http.StatusInternalServerError
+				switch sproutErr.Kind {
+				case sprout.ErrorKindParse, sprout.ErrorKindValidation:
+					status = http.StatusBadRequest
+				case sprout.ErrorKindResponseValidation, sprout.ErrorKindErrorValidation:
+					status = http.StatusInternalServerError
+				}
+
+				w.WriteHeader(status)
+
+				// Return custom error format
+				response := map[string]interface{}{
+					"success": false,
+					"error": map[string]interface{}{
+						"type":    string(sproutErr.Kind),
+						"message": sproutErr.Message,
+					},
+					"timestamp": "2024-01-01T00:00:00Z",
+					"path":      r.URL.Path,
+				}
+
+				// Include underlying error details if available
+				if sproutErr.Err != nil {
+					response["error"].(map[string]interface{})["details"] = sproutErr.Err.Error()
+				}
+
+				json.NewEncoder(w).Encode(response)
+				return
+			}
+
+			// Handle other errors (shouldn't normally happen with sprout)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		},
+	}
+
+	// Create router with custom error handler
+	router := sprout.NewWithConfig(config)
+
+	// Example endpoint that may trigger various error kinds
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created successfully",
+		}, nil
+	})
+
+	// Example: Validation error (name too short)
+	// POST /users with body: {"name": "Jo", "email": "john@example.com", "age": 25}
+	// Response: 400 Bad Request
+	// {
+	//   "success": false,
+	//   "error": {
+	//     "type": "validation_error",
+	//     "message": "request validation failed",
+	//     "details": "Key: 'CreateUserRequest.Name' Error:Field validation for 'Name' failed on the 'min' tag"
+	//   },
+	//   "timestamp": "2024-01-01T00:00:00Z",
+	//   "path": "/users"
+	// }
+
+	// Example endpoint with query params
+	sprout.GET(router, "/search", func(ctx context.Context, req *SearchRequest) (*SearchResponse, error) {
+		return &SearchResponse{
+			Results: []string{"result1", "result2"},
+			Total:   2,
+		}, nil
+	})
+
+	// Example: Parse error (invalid page number)
+	// GET /search?page=invalid&limit=10
+	// Response: 400 Bad Request
+	// {
+	//   "success": false,
+	//   "error": {
+	//     "type": "parse_error",
+	//     "message": "invalid query parameter 'page'",
+	//     "details": "strconv.ParseInt: parsing \"invalid\": invalid syntax"
+	//   },
+	//   "timestamp": "2024-01-01T00:00:00Z",
+	//   "path": "/search"
+	// }
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+// Additional types for custom error handler example
+type SearchRequest struct {
+	Query string `query:"q" validate:"required"`
+	Page  int    `query:"page" validate:"omitempty,gte=1"`
+	Limit int    `query:"limit" validate:"omitempty,gte=1,lte=100"`
+}
+
+type SearchResponse struct {
+	Results []string `json:"results" validate:"required"`
+	Total   int      `json:"total" validate:"gte=0"`
 }

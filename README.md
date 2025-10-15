@@ -379,6 +379,97 @@ The `WithErrors()` option provides:
 - **Type safety**: Error response bodies are validated before sending
 - **OpenAPI generation**: Status codes and schemas accessible via reflection for documentation
 
+### Custom Error Handler
+
+Sprout allows you to customize how system errors (parsing errors, validation errors, etc.) are handled and returned to clients. This gives you full control over error response formatting.
+
+#### Using a Custom Error Handler
+
+Create a router with a custom error handler using `NewWithConfig()`:
+
+```go
+config := &sprout.Config{
+    ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+        // Extract sprout.Error for detailed error information
+        var sproutErr *sprout.Error
+        if errors.As(err, &sproutErr) {
+            // Return custom JSON error response
+            w.Header().Set("Content-Type", "application/json")
+
+            status := http.StatusInternalServerError
+            switch sproutErr.Kind {
+            case sprout.ErrorKindParse, sprout.ErrorKindValidation:
+                status = http.StatusBadRequest
+            case sprout.ErrorKindResponseValidation, sprout.ErrorKindErrorValidation:
+                status = http.StatusInternalServerError
+            }
+
+            w.WriteHeader(status)
+            json.NewEncoder(w).Encode(map[string]any{
+                "error": map[string]any{
+                    "kind":    sproutErr.Kind,
+                    "message": sproutErr.Message,
+                    "details": sproutErr.Err.Error(),
+                },
+            })
+            return
+        }
+
+        // Handle other errors
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+    },
+}
+
+router := sprout.NewWithConfig(config)
+```
+
+#### Error Kinds
+
+Sprout provides specific error kinds to help you handle different error scenarios:
+
+| Error Kind | Description | Default Status |
+|------------|-------------|----------------|
+| `ErrorKindParse` | Failed to parse request parameters (query, path, headers) | 400 Bad Request |
+| `ErrorKindValidation` | Request validation failed | 400 Bad Request |
+| `ErrorKindResponseValidation` | Response validation failed (internal error) | 500 Internal Server Error |
+| `ErrorKindErrorValidation` | Error response validation failed (internal error) | 500 Internal Server Error |
+
+#### Error Structure
+
+The `sprout.Error` type provides detailed error context:
+
+```go
+type Error struct {
+    Kind    ErrorKind  // Category of error
+    Message string     // Human-readable message
+    Err     error      // Underlying error (can be nil)
+}
+```
+
+You can access the underlying error using `errors.As()` or `Unwrap()`:
+
+```go
+var sproutErr *sprout.Error
+if errors.As(err, &sproutErr) {
+    log.Printf("Error kind: %s", sproutErr.Kind)
+    log.Printf("Message: %s", sproutErr.Message)
+    if sproutErr.Err != nil {
+        log.Printf("Underlying error: %v", sproutErr.Err)
+    }
+}
+```
+
+#### Default Error Handling
+
+If no custom error handler is provided, Sprout uses sensible defaults:
+- **Parse/Validation errors**: Returns `400 Bad Request` with plain text error message
+- **Response/Error validation failures**: Returns `500 Internal Server Error` with plain text error message
+
+```go
+// Uses default error handling
+router := sprout.New()
+```
+
 ### Custom Success Status Codes
 
 Response types can also define custom status codes using struct tags:
