@@ -485,6 +485,160 @@ func Example_withCustomErrorHandler() {
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
 
+// Example with strict error type checking
+// By default, Sprout enforces that handlers only return declared error types
+func Example_withStrictErrorTypes() {
+	// Default behavior: strict mode enabled
+	router := sprout.New()
+
+	// Handler that declares only ConflictError
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		// Check for conflicts
+		if req.Email == "existing@example.com" {
+			// ✅ OK - ConflictError is declared
+			return nil, ConflictError{
+				Field:   "email",
+				Message: "email already exists",
+			}
+		}
+
+		// Check authorization
+		if req.Age < 18 {
+			// ❌ ERROR! UnauthorizedError is NOT declared
+			// In strict mode, this returns 500 Internal Server Error
+			// Log: ERROR: handler returned undeclared error type: UnauthorizedError
+			return nil, UnauthorizedError{
+				Message: "must be 18 or older",
+			}
+		}
+
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created successfully",
+		}, nil
+	}, sprout.WithErrors(ConflictError{})) // Only ConflictError declared
+
+	// To fix the above handler, declare ALL possible error types:
+	sprout.POST(router, "/users-fixed", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Email == "existing@example.com" {
+			return nil, ConflictError{Field: "email", Message: "email already exists"}
+		}
+		if req.Age < 18 {
+			// ✅ Now OK - UnauthorizedError is declared
+			return nil, UnauthorizedError{Message: "must be 18 or older"}
+		}
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created successfully",
+		}, nil
+	}, sprout.WithErrors(
+		ConflictError{},     // Declare all possible error types
+		UnauthorizedError{}, // This makes the API contract explicit
+	))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+// Example disabling strict error type checking
+// Sometimes you want to allow undeclared error types (backward compatibility, prototyping, etc.)
+func Example_withoutStrictErrorTypes() {
+	// Disable strict mode
+	falseVal := false
+	config := &sprout.Config{
+		StrictErrorTypes: &falseVal, // Allow undeclared error types
+	}
+	router := sprout.NewWithConfig(config)
+
+	// Now undeclared errors are allowed (with warning log)
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Email == "existing@example.com" {
+			return nil, ConflictError{Field: "email", Message: "email already exists"}
+		}
+
+		// ⚠️ UnauthorizedError not declared but still works (logs warning)
+		// Log: WARNING: handler returned unexpected error type: UnauthorizedError
+		// Client receives proper 401 response
+		if req.Age < 18 {
+			return nil, UnauthorizedError{Message: "must be 18 or older"}
+		}
+
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created successfully",
+		}, nil
+	}, sprout.WithErrors(ConflictError{}))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+// Example handling undeclared errors in custom error handler
+func Example_handlingUndeclaredErrorsInCustomHandler() {
+	config := &sprout.Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			var sproutErr *sprout.Error
+			if errors.As(err, &sproutErr) {
+				// Detect undeclared error types
+				if sproutErr.Kind == sprout.ErrorKindUndeclaredError {
+					// Log to monitoring/alerting system
+					log.Printf("ALERT: Undeclared error type in handler: %v", sproutErr.Err)
+
+					// Return custom response
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{
+						"error":   "internal_error",
+						"message": "An unexpected error occurred. This has been logged.",
+					})
+					return
+				}
+
+				// Handle other error kinds normally
+				status := http.StatusInternalServerError
+				switch sproutErr.Kind {
+				case sprout.ErrorKindParse, sprout.ErrorKindValidation:
+					status = http.StatusBadRequest
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"kind":    sproutErr.Kind,
+						"message": sproutErr.Message,
+					},
+				})
+				return
+			}
+
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		},
+	}
+
+	router := sprout.NewWithConfig(config)
+
+	// Handler with undeclared error will be caught by custom error handler
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Age < 18 {
+			// Undeclared error - custom handler will detect and handle it
+			return nil, UnauthorizedError{Message: "must be 18 or older"}
+		}
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created successfully",
+		}, nil
+	}, sprout.WithErrors(ConflictError{}))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
 // Additional types for custom error handler example
 type SearchRequest struct {
 	Query string `query:"q" validate:"required"`

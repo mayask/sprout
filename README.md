@@ -374,10 +374,114 @@ sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) 
 ```
 
 The `WithErrors()` option provides:
-- **Runtime validation**: Warns if handler returns unexpected error types
+- **Runtime validation**: Enforces declared error types (configurable)
 - **Self-documentation**: Makes possible error responses explicit in code
 - **Type safety**: Error response bodies are validated before sending
 - **OpenAPI generation**: Status codes and schemas accessible via reflection for documentation
+
+### Strict Error Type Checking
+
+By default, Sprout enforces that handlers only return error types explicitly declared via `WithErrors()`. This encourages well-documented APIs and prevents unexpected error responses.
+
+#### Default Behavior (Strict Mode)
+
+If a handler returns an undeclared error type, Sprout returns `500 Internal Server Error`:
+
+```go
+sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+    if userExists(req.Email) {
+        // ❌ ConflictError is declared, so this works
+        return nil, ConflictError{Field: "email", Message: "email already exists"}
+    }
+
+    if !authorized {
+        // ❌ ERROR! UnauthorizedError is NOT declared - returns 500
+        return nil, UnauthorizedError{Message: "not authorized"}
+    }
+
+    return &UserResponse{ID: "123"}, nil
+}, sprout.WithErrors(ConflictError{})) // Only ConflictError declared
+```
+
+**Log output:**
+```
+ERROR: handler returned undeclared error type: UnauthorizedError (expected one of: [ConflictError])
+```
+
+**Client receives:**
+```
+HTTP/1.1 500 Internal Server Error
+undeclared_error_type: handler returned undeclared error type: UnauthorizedError
+```
+
+#### Disabling Strict Mode
+
+To allow undeclared error types (backward compatibility mode), set `StrictErrorTypes` to `false`:
+
+```go
+falseVal := false
+config := &sprout.Config{
+    StrictErrorTypes: &falseVal,
+}
+router := sprout.NewWithConfig(config)
+
+sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+    // Now undeclared errors are allowed (with warning log)
+    return nil, UnauthorizedError{Message: "not authorized"}
+}, sprout.WithErrors(ConflictError{}))
+```
+
+**Log output:**
+```
+WARNING: handler returned unexpected error type: UnauthorizedError (expected one of: [ConflictError])
+```
+
+**Client receives:**
+```
+HTTP/1.1 401 Unauthorized
+{"message": "not authorized"}
+```
+
+#### Handling Undeclared Errors with Custom Error Handler
+
+When using a custom error handler, you can detect and handle undeclared error types:
+
+```go
+config := &sprout.Config{
+    ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+        var sproutErr *sprout.Error
+        if errors.As(err, &sproutErr) {
+            // Check if this is an undeclared error type
+            if sproutErr.Kind == sprout.ErrorKindUndeclaredError {
+                // Log to monitoring system
+                logToSentry(sproutErr)
+
+                // Return custom response
+                w.Header().Set("Content-Type", "application/json")
+                w.WriteHeader(http.StatusInternalServerError)
+                json.NewEncoder(w).Encode(map[string]string{
+                    "error": "internal_error",
+                    "message": "An unexpected error occurred",
+                })
+                return
+            }
+        }
+
+        // Handle other error kinds...
+    },
+}
+```
+
+**Benefits of strict mode (default):**
+- Forces explicit error type declarations via `WithErrors()`
+- Makes API contracts clear and self-documenting
+- Catches missing error type declarations during development
+- Helps generate accurate OpenAPI/Swagger documentation
+
+**When to disable strict mode:**
+- Migrating legacy code that doesn't use `WithErrors()`
+- Prototyping where error handling isn't finalized
+- Using dynamic error types that can't be known at compile time
 
 ### Custom Error Handler
 
@@ -433,6 +537,7 @@ Sprout provides specific error kinds to help you handle different error scenario
 | `ErrorKindValidation` | Request validation failed | 400 Bad Request |
 | `ErrorKindResponseValidation` | Response validation failed (internal error) | 500 Internal Server Error |
 | `ErrorKindErrorValidation` | Error response validation failed (internal error) | 500 Internal Server Error |
+| `ErrorKindUndeclaredError` | Handler returned undeclared error type (when `StrictErrorTypes` is enabled) | 500 Internal Server Error |
 
 #### Error Structure
 
