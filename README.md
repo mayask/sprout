@@ -245,26 +245,19 @@ Request validation failed: Key: 'CreateUserRequest.Email' Error:Field validation
 
 ### Typed Error Responses
 
-For more control over error responses, implement the `HTTPError` interface to return custom error types with specific status codes and validated response bodies:
+For more control over error responses, implement the `HTTPError` interface and use struct tags to define status codes:
 
 ```go
-// Define a typed error
+// Define a typed error with status code in struct tag
 type NotFoundError struct {
-    Resource string `json:"resource" validate:"required"`
-    ID       string `json:"id" validate:"required"`
-    Message  string `json:"message" validate:"required"`
+    _        struct{} `http:"status=404"`
+    Resource string   `json:"resource" validate:"required"`
+    ID       string   `json:"id" validate:"required"`
+    Message  string   `json:"message" validate:"required"`
 }
 
 func (e NotFoundError) Error() string {
     return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
-}
-
-func (e NotFoundError) StatusCode() int {
-    return http.StatusNotFound
-}
-
-func (e NotFoundError) ResponseBody() interface{} {
-    return e
 }
 
 // Use in handlers
@@ -283,9 +276,10 @@ sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) 
 
 **Key features:**
 - Error response bodies are **automatically validated** using the same validation tags
-- Custom status codes via `StatusCode()` method
+- Status codes defined via struct tags: `http:"status=404"`
+- The error struct itself is serialized as the response body
 - Type-safe error responses with struct validation
-- Optional error type registration via `WithErrors()` for compile-time documentation
+- Optional error type registration via `WithErrors()` for compile-time documentation and OpenAPI generation
 
 ### Multiple Error Types
 
@@ -293,21 +287,19 @@ You can register multiple expected error types for documentation and validation:
 
 ```go
 type ConflictError struct {
-    Field   string `json:"field" validate:"required"`
-    Message string `json:"message" validate:"required"`
+    _       struct{} `http:"status=409"`
+    Field   string   `json:"field" validate:"required"`
+    Message string   `json:"message" validate:"required"`
 }
 
 func (e ConflictError) Error() string { return e.Message }
-func (e ConflictError) StatusCode() int { return http.StatusConflict }
-func (e ConflictError) ResponseBody() interface{} { return e }
 
 type UnauthorizedError struct {
-    Message string `json:"message" validate:"required"`
+    _       struct{} `http:"status=401"`
+    Message string   `json:"message" validate:"required"`
 }
 
 func (e UnauthorizedError) Error() string { return e.Message }
-func (e UnauthorizedError) StatusCode() int { return http.StatusUnauthorized }
-func (e UnauthorizedError) ResponseBody() interface{} { return e }
 
 // Register all possible error types
 sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
@@ -338,6 +330,28 @@ The `WithErrors()` option provides:
 - **Runtime validation**: Warns if handler returns unexpected error types
 - **Self-documentation**: Makes possible error responses explicit in code
 - **Type safety**: Error response bodies are validated before sending
+- **OpenAPI generation**: Status codes and schemas accessible via reflection for documentation
+
+### Custom Success Status Codes
+
+Response types can also define custom status codes using struct tags:
+
+```go
+type CreatedResponse struct {
+    _       struct{} `http:"status=201"`  // 201 Created
+    ID      int      `json:"id" validate:"required,gt=0"`
+    Message string   `json:"message" validate:"required"`
+}
+
+sprout.POST(router, "/items", func(ctx context.Context, req *CreateItemRequest) (*CreatedResponse, error) {
+    return &CreatedResponse{
+        ID:      42,
+        Message: "Item created successfully",
+    }, nil
+})
+```
+
+Without the `http` struct tag, responses default to `200 OK`.
 
 ## Access to httprouter Features
 

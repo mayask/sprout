@@ -101,53 +101,32 @@ func Example() {
 
 // Example with typed error handling
 type NotFoundError struct {
-	Resource string `json:"resource" validate:"required"`
-	ID       string `json:"id" validate:"required"`
+	_        struct{} `http:"status=404"`
+	Resource string   `json:"resource" validate:"required"`
+	ID       string   `json:"id" validate:"required"`
 }
 
 func (e NotFoundError) Error() string {
 	return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
 }
 
-func (e NotFoundError) StatusCode() int {
-	return http.StatusNotFound
-}
-
-func (e NotFoundError) ResponseBody() interface{} {
-	return e
-}
-
 type ConflictError struct {
-	Field   string `json:"field" validate:"required"`
-	Message string `json:"message" validate:"required"`
+	_       struct{} `http:"status=409"`
+	Field   string   `json:"field" validate:"required"`
+	Message string   `json:"message" validate:"required"`
 }
 
 func (e ConflictError) Error() string {
 	return e.Message
 }
 
-func (e ConflictError) StatusCode() int {
-	return http.StatusConflict
-}
-
-func (e ConflictError) ResponseBody() interface{} {
-	return e
-}
-
 type UnauthorizedError struct {
-	Message string `json:"message" validate:"required"`
+	_       struct{} `http:"status=401"`
+	Message string   `json:"message" validate:"required"`
 }
 
 func (e UnauthorizedError) Error() string {
 	return e.Message
-}
-
-func (e UnauthorizedError) StatusCode() int {
-	return http.StatusUnauthorized
-}
-
-func (e UnauthorizedError) ResponseBody() interface{} {
-	return e
 }
 
 func Example_withErrorHandling() {

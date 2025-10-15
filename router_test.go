@@ -248,54 +248,33 @@ func TestSproutWithBodyAndParams(t *testing.T) {
 // Test error handling with HTTPError interface
 
 type NotFoundError struct {
-	Resource string `json:"resource" validate:"required"`
-	Message  string `json:"message" validate:"required"`
+	_        struct{} `http:"status=404"`
+	Resource string   `json:"resource" validate:"required"`
+	Message  string   `json:"message" validate:"required"`
 }
 
 func (e NotFoundError) Error() string {
 	return e.Message
 }
 
-func (e NotFoundError) StatusCode() int {
-	return http.StatusNotFound
-}
-
-func (e NotFoundError) ResponseBody() interface{} {
-	return e
-}
-
 type ConflictError struct {
-	Field   string `json:"field" validate:"required"`
-	Message string `json:"message" validate:"required"`
+	_       struct{} `http:"status=409"`
+	Field   string   `json:"field" validate:"required"`
+	Message string   `json:"message" validate:"required"`
 }
 
 func (e ConflictError) Error() string {
 	return e.Message
 }
 
-func (e ConflictError) StatusCode() int {
-	return http.StatusConflict
-}
-
-func (e ConflictError) ResponseBody() interface{} {
-	return e
-}
-
 type ValidationError struct {
+	_       struct{}  `http:"status=400"`
 	Fields  []string `json:"fields" validate:"required,min=1"`
 	Message string   `json:"message" validate:"required"`
 }
 
 func (e ValidationError) Error() string {
 	return e.Message
-}
-
-func (e ValidationError) StatusCode() int {
-	return http.StatusBadRequest
-}
-
-func (e ValidationError) ResponseBody() interface{} {
-	return e
 }
 
 func TestSproutHTTPError(t *testing.T) {
@@ -498,4 +477,81 @@ func TestHandle(t *testing.T) {
 	if resp.Message != "Custom method works!" {
 		t.Errorf("expected message 'Custom method works!', got %s", resp.Message)
 	}
+}
+
+// Test custom success status codes
+type CreatedResponse struct {
+	_       struct{} `http:"status=201"`
+	ID      int      `json:"id" validate:"required,gt=0"`
+	Message string   `json:"message" validate:"required"`
+}
+
+type AcceptedResponse struct {
+	_       struct{} `http:"status=202"`
+	JobID   string   `json:"job_id" validate:"required"`
+	Message string   `json:"message" validate:"required"`
+}
+
+func TestCustomSuccessStatusCodes(t *testing.T) {
+	router := New()
+
+	// Test 201 Created
+	POST(router, "/items", func(ctx context.Context, req *EmptyRequest) (*CreatedResponse, error) {
+		return &CreatedResponse{
+			ID:      42,
+			Message: "Item created",
+		}, nil
+	})
+
+	// Test 202 Accepted
+	POST(router, "/jobs", func(ctx context.Context, req *EmptyRequest) (*AcceptedResponse, error) {
+		return &AcceptedResponse{
+			JobID:   "job-123",
+			Message: "Job accepted for processing",
+		}, nil
+	})
+
+	// Test 201 Created
+	t.Run("Created201", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/items", nil))
+
+		if recorder.Code != http.StatusCreated {
+			t.Errorf("expected status 201 Created, got %d", recorder.Code)
+		}
+
+		var resp CreatedResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.ID != 42 {
+			t.Errorf("expected ID 42, got %d", resp.ID)
+		}
+		if resp.Message != "Item created" {
+			t.Errorf("expected message 'Item created', got '%s'", resp.Message)
+		}
+	})
+
+	// Test 202 Accepted
+	t.Run("Accepted202", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/jobs", nil))
+
+		if recorder.Code != http.StatusAccepted {
+			t.Errorf("expected status 202 Accepted, got %d", recorder.Code)
+		}
+
+		var resp AcceptedResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.JobID != "job-123" {
+			t.Errorf("expected JobID 'job-123', got '%s'", resp.JobID)
+		}
+		if resp.Message != "Job accepted for processing" {
+			t.Errorf("expected message 'Job accepted for processing', got '%s'", resp.Message)
+		}
+	})
 }

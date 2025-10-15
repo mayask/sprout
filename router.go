@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/julienschmidt/httprouter"
@@ -38,10 +39,10 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 }
 
 // HTTPError is an interface for errors that can provide HTTP-specific information
+// Status codes are defined using struct tags: `http:"status=404"`
+// The error struct itself is serialized as the response body
 type HTTPError interface {
 	error
-	StatusCode() int
-	ResponseBody() interface{}
 }
 
 // RouteOption is a function that configures a route
@@ -64,6 +65,33 @@ func WithErrors(errs ...error) RouteOption {
 			cfg.expectedErrors = append(cfg.expectedErrors, errType)
 		}
 	}
+}
+
+// extractStatusCode reads the HTTP status code from struct tags
+// Looks for a field with `http:"status=XXX"` tag
+// defaultCode is returned if no status tag is found
+func extractStatusCode(t reflect.Type, defaultCode int) int {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if httpTag := field.Tag.Get("http"); httpTag != "" {
+			// Parse "status=404" or "status=404,description=..."
+			parts := strings.Split(httpTag, ",")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if strings.HasPrefix(part, "status=") {
+					statusStr := strings.TrimPrefix(part, "status=")
+					if code, err := strconv.Atoi(statusStr); err == nil {
+						return code
+					}
+				}
+			}
+		}
+	}
+	return defaultCode
 }
 
 // setFieldValue sets a reflect.Value from a string value, handling type conversion
@@ -199,21 +227,20 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			}
 
 			// Try to handle error using HTTPError interface
-			if httpErr, ok := err.(HTTPError); ok {
-				errorBody := httpErr.ResponseBody()
-
+			if _, ok := err.(HTTPError); ok {
 				// Validate error response body
-				if errorBody != nil {
-					if err := s.validate.Struct(errorBody); err != nil {
-						log.Printf("ERROR: error response validation failed: %v", err)
-						http.Error(w, "Error response validation failed: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
+				if err := s.validate.Struct(err); err != nil {
+					log.Printf("ERROR: error response validation failed: %v", err)
+					http.Error(w, "Error response validation failed: "+err.Error(), http.StatusInternalServerError)
+					return
 				}
 
+				// Extract status code from struct tags (default to 500 for errors)
+				statusCode := extractStatusCode(reflect.TypeOf(err), http.StatusInternalServerError)
+
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(httpErr.StatusCode())
-				if err := json.NewEncoder(w).Encode(errorBody); err != nil {
+				w.WriteHeader(statusCode)
+				if err := json.NewEncoder(w).Encode(err); err != nil {
 					http.Error(w, "Failed to encode error response", http.StatusInternalServerError)
 				}
 				return
@@ -232,9 +259,15 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			}
 		}
 
+		// Extract status code from response struct tags (default to 200 OK)
+		statusCode := http.StatusOK
+		if respDTO != nil {
+			statusCode = extractStatusCode(reflect.TypeOf(respDTO), http.StatusOK)
+		}
+
 		// Serialize response
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(statusCode)
 		if err := json.NewEncoder(w).Encode(respDTO); err != nil {
 			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 			return
