@@ -6,6 +6,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 
 - ✨ **Type-safe handlers** using Go generics
 - 🔒 **Automatic request & response validation** via `go-playground/validator`
+- ⚠️ **Typed error responses** with automatic validation and status codes
 - 🎯 **Multi-source parameter binding** - path, query, headers, and body in one struct
 - 🚀 **High performance** - powered by httprouter
 - 📝 **Self-documenting APIs** - request/response contracts visible in code
@@ -226,7 +227,9 @@ Query parameters, path parameters, and headers are automatically converted from 
 | `float32`, `float64` | ✅ |
 | `bool` | ✅ |
 
-## Error Responses
+## Error Handling
+
+### Basic Error Responses
 
 Sprout automatically returns appropriate HTTP status codes:
 
@@ -239,6 +242,102 @@ Example error response for validation failure:
 ```
 Request validation failed: Key: 'CreateUserRequest.Email' Error:Field validation for 'Email' failed on the 'email' tag
 ```
+
+### Typed Error Responses
+
+For more control over error responses, implement the `HTTPError` interface to return custom error types with specific status codes and validated response bodies:
+
+```go
+// Define a typed error
+type NotFoundError struct {
+    Resource string `json:"resource" validate:"required"`
+    ID       string `json:"id" validate:"required"`
+    Message  string `json:"message" validate:"required"`
+}
+
+func (e NotFoundError) Error() string {
+    return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
+}
+
+func (e NotFoundError) StatusCode() int {
+    return http.StatusNotFound
+}
+
+func (e NotFoundError) ResponseBody() interface{} {
+    return e
+}
+
+// Use in handlers
+sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*UserResponse, error) {
+    user, err := db.FindUser(req.UserID)
+    if err != nil {
+        return nil, NotFoundError{
+            Resource: "user",
+            ID:       req.UserID,
+            Message:  "user not found",
+        }
+    }
+    return &UserResponse{ID: user.ID, Name: user.Name}, nil
+}, sprout.WithErrors(NotFoundError{}))
+```
+
+**Key features:**
+- Error response bodies are **automatically validated** using the same validation tags
+- Custom status codes via `StatusCode()` method
+- Type-safe error responses with struct validation
+- Optional error type registration via `WithErrors()` for compile-time documentation
+
+### Multiple Error Types
+
+You can register multiple expected error types for documentation and validation:
+
+```go
+type ConflictError struct {
+    Field   string `json:"field" validate:"required"`
+    Message string `json:"message" validate:"required"`
+}
+
+func (e ConflictError) Error() string { return e.Message }
+func (e ConflictError) StatusCode() int { return http.StatusConflict }
+func (e ConflictError) ResponseBody() interface{} { return e }
+
+type UnauthorizedError struct {
+    Message string `json:"message" validate:"required"`
+}
+
+func (e UnauthorizedError) Error() string { return e.Message }
+func (e UnauthorizedError) StatusCode() int { return http.StatusUnauthorized }
+func (e UnauthorizedError) ResponseBody() interface{} { return e }
+
+// Register all possible error types
+sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
+    // Check authorization
+    if !isAuthorized(ctx) {
+        return nil, UnauthorizedError{Message: "invalid credentials"}
+    }
+
+    // Check for conflicts
+    if userExists(req.Email) {
+        return nil, ConflictError{Field: "email", Message: "email already exists"}
+    }
+
+    // Check if resource exists
+    if !resourceExists(req.OrgID) {
+        return nil, NotFoundError{Resource: "organization", ID: req.OrgID, Message: "organization not found"}
+    }
+
+    return &UserResponse{ID: "123", Name: req.Name}, nil
+}, sprout.WithErrors(
+    NotFoundError{},
+    ConflictError{},
+    UnauthorizedError{},
+))
+```
+
+The `WithErrors()` option provides:
+- **Runtime validation**: Warns if handler returns unexpected error types
+- **Self-documentation**: Makes possible error responses explicit in code
+- **Type safety**: Error response bodies are validated before sending
 
 ## Access to httprouter Features
 

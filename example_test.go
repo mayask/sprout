@@ -154,8 +154,9 @@ func Example_withErrorHandling() {
 	router := sprout.New()
 
 	// Register endpoint with expected error types
+	// Error response bodies are automatically validated just like success responses
 	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
-		// Check if user already exists
+		// Check if user already exists - returns 409 Conflict
 		if req.Email == "existing@example.com" {
 			return nil, ConflictError{
 				Field:   "email",
@@ -163,7 +164,7 @@ func Example_withErrorHandling() {
 			}
 		}
 
-		// Validate age
+		// Check authorization - returns 401 Unauthorized
 		if req.Age < 18 {
 			return nil, UnauthorizedError{
 				Message: "must be 18 or older",
@@ -177,12 +178,12 @@ func Example_withErrorHandling() {
 			Message: "User created successfully",
 		}, nil
 	}, sprout.WithErrors(
-		NotFoundError{},
-		ConflictError{},
-		UnauthorizedError{},
+		NotFoundError{},     // Documents that this endpoint may return 404
+		ConflictError{},     // Documents that this endpoint may return 409
+		UnauthorizedError{}, // Documents that this endpoint may return 401
 	))
 
-	// GET endpoint that may return NotFoundError
+	// GET endpoint that may return NotFoundError - returns 404
 	sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
 		// Simulate user not found
 		if req.UserID == "00000000-0000-0000-0000-000000000000" {
@@ -198,6 +199,34 @@ func Example_withErrorHandling() {
 			Email:  "john@example.com",
 		}, nil
 	}, sprout.WithErrors(NotFoundError{}, UnauthorizedError{}))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+// Example showing error validation in action
+func Example_errorValidation() {
+	router := sprout.New()
+
+	// This demonstrates that error response bodies are validated
+	// If you return an error with invalid/missing required fields,
+	// Sprout will catch it and return 500 Internal Server Error
+	sprout.GET(router, "/invalid", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+		// This error is INVALID - missing required ID field
+		// Sprout will validate and return: "Error response validation failed"
+		return nil, NotFoundError{
+			Resource: "user",
+			// ID is MISSING! This will fail validation since it's marked as required
+		}
+	}, sprout.WithErrors(NotFoundError{}))
+
+	// This is the CORRECT way - all required fields provided
+	sprout.GET(router, "/valid", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+		// This error is VALID - all required fields present
+		return nil, NotFoundError{
+			Resource: "user",
+			ID:       req.UserID, // All validation tags satisfied
+		}
+	}, sprout.WithErrors(NotFoundError{}))
 
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
