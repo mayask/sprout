@@ -209,3 +209,67 @@ func Example_errorValidation() {
 
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
+
+// Example with custom response headers
+// Response headers are set using the `header:` tag
+// These fields are automatically excluded from JSON (no json:"-" needed!)
+
+// Response type with custom headers
+type UserCreatedResponse struct {
+	_        struct{} `http:"status=201"`
+	Location string   `header:"Location"` // Set Location header
+	ETag     string   `header:"ETag"`     // Set ETag header
+	ID       string   `json:"id" validate:"required"`
+	Name     string   `json:"name" validate:"required"`
+	Message  string   `json:"message" validate:"required"`
+}
+
+// Error type with custom headers
+type RateLimitError struct {
+	_          struct{} `http:"status=429"`
+	RetryAfter string   `header:"Retry-After"` // Set Retry-After header
+	RateLimit  string   `header:"X-RateLimit"` // Set custom header
+	Message    string   `json:"message" validate:"required"`
+}
+
+func (e RateLimitError) Error() string { return e.Message }
+
+func Example_withResponseHeaders() {
+	router := sprout.New()
+
+	// POST endpoint that returns 201 with Location and ETag headers
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserCreatedResponse, error) {
+		userID := "user-123"
+
+		return &UserCreatedResponse{
+			Location: fmt.Sprintf("/users/%s", userID), // Sets Location header
+			ETag:     `"v1.0"`,                         // Sets ETag header
+			ID:       userID,
+			Name:     req.Name,
+			Message:  "User created successfully",
+		}, nil
+		// JSON response: {"id":"user-123","name":"...","message":"..."}
+		// HTTP headers: Location: /users/user-123, ETag: "v1.0"
+		// Note: Location and ETag are NOT in the JSON body!
+	})
+
+	// Endpoint that may return rate limit error with custom headers
+	sprout.GET(router, "/api/data", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+		// Simulate rate limiting
+		if req.Page > 100 {
+			return nil, RateLimitError{
+				RetryAfter: "60",           // Sets Retry-After: 60 header
+				RateLimit:  "100 per hour", // Sets X-RateLimit: 100 per hour header
+				Message:    "rate limit exceeded",
+			}
+		}
+
+		return &GetUserResponse{
+			UserID: req.UserID,
+			Name:   "John Doe",
+			Email:  "john@example.com",
+		}, nil
+	}, sprout.WithErrors(RateLimitError{}))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}

@@ -555,3 +555,469 @@ func TestCustomSuccessStatusCodes(t *testing.T) {
 		}
 	})
 }
+
+// Test custom headers
+type HeaderResponse struct {
+	_            struct{} `http:"status=200"`
+	CustomHeader string   `header:"X-Custom-Header"`
+	ApiVersion   string   `header:"X-Api-Version"`
+	Message      string   `json:"message" validate:"required"`
+}
+
+type HeaderErrorResponse struct {
+	_         struct{} `http:"status=400"`
+	ErrorCode string   `header:"X-Error-Code"`
+	RequestID string   `header:"X-Request-Id"`
+	Message   string   `json:"message" validate:"required"`
+}
+
+func (e HeaderErrorResponse) Error() string {
+	return e.Message
+}
+
+func TestCustomHeaders(t *testing.T) {
+	router := New()
+
+	// Test custom headers on success response
+	GET(router, "/with-headers", func(ctx context.Context, req *EmptyRequest) (*HeaderResponse, error) {
+		return &HeaderResponse{
+			CustomHeader: "CustomValue",
+			ApiVersion:   "v1",
+			Message:      "Success with custom headers",
+		}, nil
+	})
+
+	// Test custom headers on error response
+	GET(router, "/with-error-headers", func(ctx context.Context, req *EmptyRequest) (*HeaderResponse, error) {
+		return nil, HeaderErrorResponse{
+			ErrorCode: "INVALID_INPUT",
+			RequestID: "req-123",
+			Message:   "Error with custom headers",
+		}
+	}, WithErrors(HeaderErrorResponse{}))
+
+	// Test success response headers
+	t.Run("SuccessResponseHeaders", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/with-headers", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status 200 OK, got %d", recorder.Code)
+		}
+
+		// Check custom headers
+		if header := recorder.Header().Get("X-Custom-Header"); header != "CustomValue" {
+			t.Errorf("expected X-Custom-Header 'CustomValue', got '%s'", header)
+		}
+		if header := recorder.Header().Get("X-Api-Version"); header != "v1" {
+			t.Errorf("expected X-Api-Version 'v1', got '%s'", header)
+		}
+
+		var resp HeaderResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Message != "Success with custom headers" {
+			t.Errorf("expected message 'Success with custom headers', got '%s'", resp.Message)
+		}
+	})
+
+	// Test error response headers
+	t.Run("ErrorResponseHeaders", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/with-error-headers", nil))
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400 Bad Request, got %d", recorder.Code)
+		}
+
+		// Check custom headers
+		if header := recorder.Header().Get("X-Error-Code"); header != "INVALID_INPUT" {
+			t.Errorf("expected X-Error-Code 'INVALID_INPUT', got '%s'", header)
+		}
+		if header := recorder.Header().Get("X-Request-Id"); header != "req-123" {
+			t.Errorf("expected X-Request-Id 'req-123', got '%s'", header)
+		}
+
+		var errResp HeaderErrorResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error response: %v", err)
+		}
+
+		if errResp.Message != "Error with custom headers" {
+			t.Errorf("expected message 'Error with custom headers', got '%s'", errResp.Message)
+		}
+	})
+}
+
+// Test custom Content-Type header
+type CustomContentTypeResponse struct {
+	_           struct{} `http:"status=200"`
+	ContentType string   `header:"Content-Type"`
+	Message     string   `json:"message" validate:"required"`
+}
+
+type CustomContentTypeError struct {
+	_           struct{} `http:"status=400"`
+	ContentType string   `header:"Content-Type"`
+	Message     string   `json:"message" validate:"required"`
+}
+
+func (e CustomContentTypeError) Error() string {
+	return e.Message
+}
+
+func TestCustomContentType(t *testing.T) {
+	router := New()
+
+	// Test default Content-Type (application/json)
+	GET(router, "/default-content-type", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "Default content type"}, nil
+	})
+
+	// Test custom Content-Type on success response
+	GET(router, "/custom-content-type", func(ctx context.Context, req *EmptyRequest) (*CustomContentTypeResponse, error) {
+		return &CustomContentTypeResponse{
+			ContentType: "application/vnd.api+json",
+			Message:     "Custom content type",
+		}, nil
+	})
+
+	// Test custom Content-Type on error response
+	GET(router, "/custom-error-content-type", func(ctx context.Context, req *EmptyRequest) (*CustomContentTypeResponse, error) {
+		return nil, CustomContentTypeError{
+			ContentType: "application/problem+json",
+			Message:     "Custom error content type",
+		}
+	}, WithErrors(CustomContentTypeError{}))
+
+	// Test default Content-Type
+	t.Run("DefaultContentType", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/default-content-type", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status 200 OK, got %d", recorder.Code)
+		}
+
+		// Should have default Content-Type
+		if contentType := recorder.Header().Get("Content-Type"); contentType != "application/json" {
+			t.Errorf("expected Content-Type 'application/json', got '%s'", contentType)
+		}
+	})
+
+	// Test custom Content-Type on success response
+	t.Run("CustomContentType", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/custom-content-type", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status 200 OK, got %d", recorder.Code)
+		}
+
+		// Should have custom Content-Type
+		if contentType := recorder.Header().Get("Content-Type"); contentType != "application/vnd.api+json" {
+			t.Errorf("expected Content-Type 'application/vnd.api+json', got '%s'", contentType)
+		}
+
+		var resp CustomContentTypeResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Message != "Custom content type" {
+			t.Errorf("expected message 'Custom content type', got '%s'", resp.Message)
+		}
+	})
+
+	// Test custom Content-Type on error response
+	t.Run("CustomErrorContentType", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/custom-error-content-type", nil))
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400 Bad Request, got %d", recorder.Code)
+		}
+
+		// Should have custom Content-Type
+		if contentType := recorder.Header().Get("Content-Type"); contentType != "application/problem+json" {
+			t.Errorf("expected Content-Type 'application/problem+json', got '%s'", contentType)
+		}
+
+		var errResp CustomContentTypeError
+		if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error response: %v", err)
+		}
+
+		if errResp.Message != "Custom error content type" {
+			t.Errorf("expected message 'Custom error content type', got '%s'", errResp.Message)
+		}
+	})
+}
+
+// Test automatic exclusion of routing/metadata fields from JSON
+func TestJSONAutoExclusion(t *testing.T) {
+	router := New()
+
+	type ResponseWithAllTags struct {
+		_            struct{} `http:"status=200"`
+		PathField    string   `path:"id"`
+		QueryField   string   `query:"page"`
+		HeaderField  string   `header:"X-Custom"`
+		HTTPField    struct{} `http:"status=200"`
+		JSONField    string   `json:"data"`
+		NormalField  string   // No tags
+	}
+
+	GET(router, "/test/:id", func(ctx context.Context, req *EmptyRequest) (*ResponseWithAllTags, error) {
+		return &ResponseWithAllTags{
+			PathField:   "should-not-appear",
+			QueryField:  "should-not-appear",
+			HeaderField: "header-value",
+			JSONField:   "should-appear",
+			NormalField: "should-appear-as-NormalField",
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/test/123", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+
+	// Verify header was set
+	if header := recorder.Header().Get("X-Custom"); header != "header-value" {
+		t.Errorf("expected X-Custom header 'header-value', got '%s'", header)
+	}
+
+	// Parse JSON response
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Verify excluded fields are NOT in JSON
+	if _, exists := result["PathField"]; exists {
+		t.Errorf("PathField should be excluded from JSON, but was present")
+	}
+	if _, exists := result["QueryField"]; exists {
+		t.Errorf("QueryField should be excluded from JSON, but was present")
+	}
+	if _, exists := result["HeaderField"]; exists {
+		t.Errorf("HeaderField should be excluded from JSON, but was present")
+	}
+	if _, exists := result["HTTPField"]; exists {
+		t.Errorf("HTTPField should be excluded from JSON, but was present")
+	}
+
+	// Verify included fields ARE in JSON
+	if data, exists := result["data"]; !exists {
+		t.Errorf("'data' should be in JSON")
+	} else if data != "should-appear" {
+		t.Errorf("expected 'data' to be 'should-appear', got '%v'", data)
+	}
+
+	if normalField, exists := result["NormalField"]; !exists {
+		t.Errorf("'NormalField' should be in JSON")
+	} else if normalField != "should-appear-as-NormalField" {
+		t.Errorf("expected 'NormalField' to be 'should-appear-as-NormalField', got '%v'", normalField)
+	}
+}
+
+// Test JSON exclusion with omitempty
+func TestJSONAutoExclusionWithOmitempty(t *testing.T) {
+	router := New()
+
+	type ResponseWithOmitempty struct {
+		Required    string `json:"required"`
+		Optional    string `json:"optional,omitempty"`
+		EmptyString string `json:"empty_string,omitempty"`
+		HeaderField string `header:"X-Test"`
+	}
+
+	GET(router, "/omitempty-test", func(ctx context.Context, req *EmptyRequest) (*ResponseWithOmitempty, error) {
+		return &ResponseWithOmitempty{
+			Required:    "present",
+			Optional:    "also-present",
+			EmptyString: "", // Should be omitted
+			HeaderField: "test-header",
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/omitempty-test", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Verify required field is present
+	if _, exists := result["required"]; !exists {
+		t.Errorf("'required' should be in JSON")
+	}
+
+	// Verify optional non-empty field is present
+	if _, exists := result["optional"]; !exists {
+		t.Errorf("'optional' should be in JSON")
+	}
+
+	// Verify empty field with omitempty is NOT present
+	if _, exists := result["empty_string"]; exists {
+		t.Errorf("'empty_string' should be omitted from JSON due to omitempty")
+	}
+
+	// Verify header field is NOT in JSON
+	if _, exists := result["HeaderField"]; exists {
+		t.Errorf("'HeaderField' should be excluded from JSON")
+	}
+
+	// Verify header was set
+	if header := recorder.Header().Get("X-Test"); header != "test-header" {
+		t.Errorf("expected X-Test header 'test-header', got '%s'", header)
+	}
+}
+
+// Test JSON exclusion with explicit json:"-" tag
+func TestJSONAutoExclusionWithExplicitJsonDash(t *testing.T) {
+	router := New()
+
+	type ResponseWithExplicitExclusion struct {
+		PublicField  string `json:"public"`
+		PrivateField string `json:"-"`        // Explicitly excluded
+		HeaderField  string `header:"X-Test"` // Auto-excluded
+	}
+
+	GET(router, "/explicit-test", func(ctx context.Context, req *EmptyRequest) (*ResponseWithExplicitExclusion, error) {
+		return &ResponseWithExplicitExclusion{
+			PublicField:  "visible",
+			PrivateField: "invisible",
+			HeaderField:  "header-value",
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/explicit-test", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Verify public field is present
+	if val, exists := result["public"]; !exists {
+		t.Errorf("'public' should be in JSON")
+	} else if val != "visible" {
+		t.Errorf("expected 'public' to be 'visible', got '%v'", val)
+	}
+
+	// Verify private field with json:"-" is NOT present
+	if _, exists := result["PrivateField"]; exists {
+		t.Errorf("'PrivateField' should be excluded from JSON due to json:\"-\" tag")
+	}
+
+	// Verify header field is NOT present
+	if _, exists := result["HeaderField"]; exists {
+		t.Errorf("'HeaderField' should be excluded from JSON due to header tag")
+	}
+}
+
+// Test JSON exclusion in error responses
+type ErrorWithMetadata struct {
+	_           struct{} `http:"status=400"`
+	HeaderField string   `header:"X-Error-Code"`
+	ErrorCode   string   `json:"error_code"`
+	Message     string   `json:"message"`
+}
+
+func (e ErrorWithMetadata) Error() string { return e.Message }
+
+func TestJSONAutoExclusionInErrors(t *testing.T) {
+	router := New()
+
+	GET(router, "/error-test", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, ErrorWithMetadata{
+			HeaderField: "BAD_REQUEST",
+			ErrorCode:   "invalid_input",
+			Message:     "Something went wrong",
+		}
+	}, WithErrors(ErrorWithMetadata{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/error-test", nil))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", recorder.Code)
+	}
+
+	// Verify header was set
+	if header := recorder.Header().Get("X-Error-Code"); header != "BAD_REQUEST" {
+		t.Errorf("expected X-Error-Code header 'BAD_REQUEST', got '%s'", header)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	// Verify header field is NOT in JSON
+	if _, exists := result["HeaderField"]; exists {
+		t.Errorf("'HeaderField' should be excluded from JSON")
+	}
+
+	// Verify error fields are present
+	if _, exists := result["error_code"]; !exists {
+		t.Errorf("'error_code' should be in JSON")
+	}
+	if _, exists := result["message"]; !exists {
+		t.Errorf("'message' should be in JSON")
+	}
+}
+
+// Test corner case: struct with only routing tags
+func TestJSONAutoExclusionAllFieldsExcluded(t *testing.T) {
+	router := New()
+
+	type ResponseOnlyRoutingFields struct {
+		_           struct{} `http:"status=204"`
+		HeaderField string   `header:"X-Custom"`
+	}
+
+	GET(router, "/only-routing", func(ctx context.Context, req *EmptyRequest) (*ResponseOnlyRoutingFields, error) {
+		return &ResponseOnlyRoutingFields{
+			HeaderField: "test",
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/only-routing", nil))
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d", recorder.Code)
+	}
+
+	// Verify header was set
+	if header := recorder.Header().Get("X-Custom"); header != "test" {
+		t.Errorf("expected X-Custom header 'test', got '%s'", header)
+	}
+
+	// Should return empty JSON object {}
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected empty JSON object {}, got %v", result)
+	}
+}

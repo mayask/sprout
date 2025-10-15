@@ -94,6 +94,103 @@ func extractStatusCode(t reflect.Type, defaultCode int) int {
 	return defaultCode
 }
 
+// extractHeaders reads HTTP headers from named fields with `header:` tags
+// Takes a reflect.Value (not Type) to read field values
+// Returns a map of header names to values
+func extractHeaders(v reflect.Value) map[string]string {
+	headers := make(map[string]string)
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		fieldValue := v.Field(i)
+
+		// Look for `header:"Header-Name"` tag
+		if headerTag := field.Tag.Get("header"); headerTag != "" {
+			// Get the string value of the field
+			if fieldValue.Kind() == reflect.String {
+				value := fieldValue.String()
+				if value != "" {
+					headers[headerTag] = value
+				}
+			}
+		}
+	}
+
+	return headers
+}
+
+// shouldExcludeFromJSON checks if a field should be excluded from JSON serialization
+// Fields with path, query, header, or http tags are excluded
+func shouldExcludeFromJSON(field reflect.StructField) bool {
+	// Check if field has json:"-" tag explicitly
+	if jsonTag := field.Tag.Get("json"); jsonTag == "-" {
+		return true
+	}
+
+	// Exclude fields with routing/metadata tags
+	if field.Tag.Get("path") != "" {
+		return true
+	}
+	if field.Tag.Get("query") != "" {
+		return true
+	}
+	if field.Tag.Get("header") != "" {
+		return true
+	}
+	if field.Tag.Get("http") != "" {
+		return true
+	}
+
+	return false
+}
+
+// toJSONMap converts a struct to a map, excluding fields with routing tags
+func toJSONMap(v interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+
+	typ := val.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		fieldValue := val.Field(i)
+
+		// Skip fields that should be excluded
+		if shouldExcludeFromJSON(field) {
+			continue
+		}
+
+		// Get JSON field name from tag, or use struct field name
+		jsonName := field.Name
+		if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
+			// Parse json tag (handle "name,omitempty" format)
+			parts := strings.Split(jsonTag, ",")
+			if parts[0] != "" {
+				jsonName = parts[0]
+			}
+			// Check for omitempty
+			if len(parts) > 1 && parts[1] == "omitempty" {
+				// Skip zero values
+				if fieldValue.IsZero() {
+					continue
+				}
+			}
+		}
+
+		result[jsonName] = fieldValue.Interface()
+	}
+
+	return result
+}
+
 // setFieldValue sets a reflect.Value from a string value, handling type conversion
 func setFieldValue(fieldValue reflect.Value, value string) error {
 	if value == "" {
@@ -235,12 +332,23 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 					return
 				}
 
-				// Extract status code from struct tags (default to 500 for errors)
-				statusCode := extractStatusCode(reflect.TypeOf(err), http.StatusInternalServerError)
+				// Extract status code and headers from struct tags (default to 500 for errors)
+				errType := reflect.TypeOf(err)
+				statusCode := extractStatusCode(errType, http.StatusInternalServerError)
+				customHeaders := extractHeaders(reflect.ValueOf(err))
 
-				w.Header().Set("Content-Type", "application/json")
+				// Set custom headers from struct tags
+				for name, value := range customHeaders {
+					w.Header().Set(name, value)
+				}
+
+				// Set Content-Type to application/json if not already set
+				if w.Header().Get("Content-Type") == "" {
+					w.Header().Set("Content-Type", "application/json")
+				}
 				w.WriteHeader(statusCode)
-				if err := json.NewEncoder(w).Encode(err); err != nil {
+				// Convert to map to exclude routing/metadata fields from JSON
+				if err := json.NewEncoder(w).Encode(toJSONMap(err)); err != nil {
 					http.Error(w, "Failed to encode error response", http.StatusInternalServerError)
 				}
 				return
@@ -259,16 +367,29 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			}
 		}
 
-		// Extract status code from response struct tags (default to 200 OK)
+		// Extract status code and headers from response struct tags
 		statusCode := http.StatusOK
+		var customHeaders map[string]string
 		if respDTO != nil {
-			statusCode = extractStatusCode(reflect.TypeOf(respDTO), http.StatusOK)
+			respType := reflect.TypeOf(respDTO)
+			statusCode = extractStatusCode(respType, http.StatusOK)
+			customHeaders = extractHeaders(reflect.ValueOf(respDTO))
+		}
+
+		// Set custom headers from struct tags
+		for name, value := range customHeaders {
+			w.Header().Set(name, value)
+		}
+
+		// Set Content-Type to application/json if not already set
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/json")
 		}
 
 		// Serialize response
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
-		if err := json.NewEncoder(w).Encode(respDTO); err != nil {
+		// Convert to map to exclude routing/metadata fields from JSON
+		if err := json.NewEncoder(w).Encode(toJSONMap(respDTO)); err != nil {
 			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 			return
 		}

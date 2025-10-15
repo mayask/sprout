@@ -8,6 +8,8 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 - 🔒 **Automatic request & response validation** via `go-playground/validator`
 - ⚠️ **Typed error responses** with automatic validation and status codes
 - 🎯 **Multi-source parameter binding** - path, query, headers, and body in one struct
+- 📤 **Response headers** - set custom HTTP headers using struct tags
+- 🧹 **Auto-exclusion** - routing/metadata fields automatically excluded from JSON
 - 🚀 **High performance** - powered by httprouter
 - 📝 **Self-documenting APIs** - request/response contracts visible in code
 - 🔄 **Automatic type conversion** - strings to int, float, bool, etc.
@@ -352,6 +354,49 @@ sprout.POST(router, "/items", func(ctx context.Context, req *CreateItemRequest) 
 ```
 
 Without the `http` struct tag, responses default to `200 OK`.
+
+### Custom Response Headers
+
+You can set custom HTTP headers in both success and error responses using the `header:` tag:
+
+```go
+type UserCreatedResponse struct {
+    _        struct{} `http:"status=201"`
+    Location string   `header:"Location"`  // Set Location header
+    ETag     string   `header:"ETag"`      // Set ETag header
+    ID       string   `json:"id" validate:"required"`
+    Name     string   `json:"name" validate:"required"`
+}
+
+sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*UserCreatedResponse, error) {
+    userID := "user-123"
+    return &UserCreatedResponse{
+        Location: fmt.Sprintf("/users/%s", userID),
+        ETag:     `"v1.0"`,
+        ID:       userID,
+        Name:     req.Name,
+    }, nil
+})
+```
+
+The `Location` and `ETag` fields are automatically:
+- Set as HTTP response headers
+- **Excluded from the JSON response body** (no need for `json:"-"` tags!)
+
+This works for error responses too:
+
+```go
+type RateLimitError struct {
+    _            struct{} `http:"status=429"`
+    RetryAfter   string   `header:"Retry-After"`    // Set Retry-After header
+    RateLimit    string   `header:"X-Rate-Limit"`   // Set custom header
+    Message      string   `json:"message" validate:"required"`
+}
+
+func (e RateLimitError) Error() string { return e.Message }
+```
+
+**Auto-exclusion from JSON**: Fields with `path`, `query`, `header`, or `http` tags are automatically excluded from JSON serialization. You don't need to add `json:"-"` manually!
 
 ## Access to httprouter Features
 
