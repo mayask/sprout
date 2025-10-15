@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -26,6 +27,44 @@ func New() *Sprout {
 }
 
 type Handle[Req, Resp any] func(context.Context, *Req) (*Resp, error)
+
+// handle is a helper that applies route config and registers a handler
+func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	cfg := &routeConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	s.Router.Handle(method, path, wrap(s, h, cfg))
+}
+
+// HTTPError is an interface for errors that can provide HTTP-specific information
+type HTTPError interface {
+	error
+	StatusCode() int
+	ResponseBody() interface{}
+}
+
+// RouteOption is a function that configures a route
+type RouteOption func(*routeConfig)
+
+// routeConfig holds configuration for a route
+type routeConfig struct {
+	expectedErrors []reflect.Type
+}
+
+// WithErrors registers expected error types for validation and documentation
+func WithErrors(errs ...error) RouteOption {
+	return func(cfg *routeConfig) {
+		for _, err := range errs {
+			errType := reflect.TypeOf(err)
+			// Handle both pointer and value types
+			if errType.Kind() == reflect.Ptr {
+				errType = errType.Elem()
+			}
+			cfg.expectedErrors = append(cfg.expectedErrors, errType)
+		}
+	}
+}
 
 // setFieldValue sets a reflect.Value from a string value, handling type conversion
 func setFieldValue(fieldValue reflect.Value, value string) error {
@@ -67,7 +106,7 @@ func setFieldValue(fieldValue reflect.Value, value string) error {
 	return nil
 }
 
-func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp]) httprouter.Handle {
+func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) httprouter.Handle {
 	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
 		ctx := req.Context()
 
@@ -139,6 +178,48 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp]) httprouter.Handle 
 		// Call the handler
 		respDTO, err := handle(ctx, &reqDTO)
 		if err != nil {
+			// Validate error type if expected errors are configured
+			if len(cfg.expectedErrors) > 0 {
+				errType := reflect.TypeOf(err)
+				if errType.Kind() == reflect.Ptr {
+					errType = errType.Elem()
+				}
+
+				found := false
+				for _, expected := range cfg.expectedErrors {
+					if errType == expected {
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					log.Printf("WARNING: handler returned unexpected error type: %T (expected one of: %v)", err, cfg.expectedErrors)
+				}
+			}
+
+			// Try to handle error using HTTPError interface
+			if httpErr, ok := err.(HTTPError); ok {
+				errorBody := httpErr.ResponseBody()
+
+				// Validate error response body
+				if errorBody != nil {
+					if err := s.validate.Struct(errorBody); err != nil {
+						log.Printf("ERROR: error response validation failed: %v", err)
+						http.Error(w, "Error response validation failed: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(httpErr.StatusCode())
+				if err := json.NewEncoder(w).Encode(errorBody); err != nil {
+					http.Error(w, "Failed to encode error response", http.StatusInternalServerError)
+				}
+				return
+			}
+
+			// Fallback to generic 500 error
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -161,37 +242,37 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp]) httprouter.Handle 
 	}
 }
 
-// GET is a shortcut for router.Handle(http.MethodGet, path, handle)
-func GET[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodGet, path, wrap(s, handle))
+// GET is a shortcut for handle(s, http.MethodGet, path, h, opts...)
+func GET[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodGet, path, h, opts...)
 }
 
-// HEAD is a shortcut for router.Handle(http.MethodHead, path, handle)
-func HEAD[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodHead, path, wrap(s, handle))
+// HEAD is a shortcut for Handle(s, http.MethodHead, path, h, opts...)
+func HEAD[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodHead, path, h, opts...)
 }
 
-// OPTIONS is a shortcut for router.Handle(http.MethodOptions, path, handle)
-func OPTIONS[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodOptions, path, wrap(s, handle))
+// OPTIONS is a shortcut for Handle(s, http.MethodOptions, path, h, opts...)
+func OPTIONS[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodOptions, path, h, opts...)
 }
 
-// POST is a shortcut for router.Handle(http.MethodPost, path, handle)
-func POST[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodPost, path, wrap(s, handle))
+// POST is a shortcut for Handle(s, http.MethodPost, path, h, opts...)
+func POST[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodPost, path, h, opts...)
 }
 
-// PUT is a shortcut for router.Handle(http.MethodPut, path, handle)
-func PUT[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodPut, path, wrap(s, handle))
+// PUT is a shortcut for Handle(s, http.MethodPut, path, h, opts...)
+func PUT[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodPut, path, h, opts...)
 }
 
-// PATCH is a shortcut for router.Handle(http.MethodPatch, path, handle)
-func PATCH[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodPatch, path, wrap(s, handle))
+// PATCH is a shortcut for Handle(s, http.MethodPatch, path, h, opts...)
+func PATCH[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodPatch, path, h, opts...)
 }
 
-// DELETE is a shortcut for router.Handle(http.MethodDelete, path, handle)
-func DELETE[Req, Resp any](s *Sprout, path string, handle Handle[Req, Resp]) {
-	s.Router.Handle(http.MethodDelete, path, wrap(s, handle))
+// DELETE is a shortcut for Handle(s, http.MethodDelete, path, h, opts...)
+func DELETE[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
+	handle(s, http.MethodDelete, path, h, opts...)
 }

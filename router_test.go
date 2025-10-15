@@ -244,3 +244,258 @@ func TestSproutWithBodyAndParams(t *testing.T) {
 		t.Errorf("expected Email 'jane@example.com', got '%s'", resp.Email)
 	}
 }
+
+// Test error handling with HTTPError interface
+
+type NotFoundError struct {
+	Resource string `json:"resource" validate:"required"`
+	Message  string `json:"message" validate:"required"`
+}
+
+func (e NotFoundError) Error() string {
+	return e.Message
+}
+
+func (e NotFoundError) StatusCode() int {
+	return http.StatusNotFound
+}
+
+func (e NotFoundError) ResponseBody() interface{} {
+	return e
+}
+
+type ConflictError struct {
+	Field   string `json:"field" validate:"required"`
+	Message string `json:"message" validate:"required"`
+}
+
+func (e ConflictError) Error() string {
+	return e.Message
+}
+
+func (e ConflictError) StatusCode() int {
+	return http.StatusConflict
+}
+
+func (e ConflictError) ResponseBody() interface{} {
+	return e
+}
+
+type ValidationError struct {
+	Fields  []string `json:"fields" validate:"required,min=1"`
+	Message string   `json:"message" validate:"required"`
+}
+
+func (e ValidationError) Error() string {
+	return e.Message
+}
+
+func (e ValidationError) StatusCode() int {
+	return http.StatusBadRequest
+}
+
+func (e ValidationError) ResponseBody() interface{} {
+	return e
+}
+
+func TestSproutHTTPError(t *testing.T) {
+	router := New()
+
+	// Register handler with expected errors
+	POST(router, "/items", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		// Simulate not found error
+		if req.Name == "notfound" {
+			return nil, NotFoundError{
+				Resource: "user",
+				Message:  "user not found",
+			}
+		}
+
+		// Simulate conflict error
+		if req.Name == "conflict" {
+			return nil, ConflictError{
+				Field:   "email",
+				Message: "email already exists",
+			}
+		}
+
+		return &CreateUserResponse{
+			ID:    1,
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	}, WithErrors(NotFoundError{}, ConflictError{}, ValidationError{}))
+
+	// Test NotFoundError
+	t.Run("NotFoundError", func(t *testing.T) {
+		reqBody := CreateUserRequest{
+			Name:  "notfound",
+			Email: "test@example.com",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/items", bytes.NewReader(body)))
+
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", recorder.Code)
+		}
+
+		var errResp NotFoundError
+		if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error response: %v", err)
+		}
+
+		if errResp.Resource != "user" {
+			t.Errorf("expected resource 'user', got '%s'", errResp.Resource)
+		}
+	})
+
+	// Test ConflictError
+	t.Run("ConflictError", func(t *testing.T) {
+		reqBody := CreateUserRequest{
+			Name:  "conflict",
+			Email: "test@example.com",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/items", bytes.NewReader(body)))
+
+		if recorder.Code != http.StatusConflict {
+			t.Errorf("expected status 409, got %d", recorder.Code)
+		}
+
+		var errResp ConflictError
+		if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error response: %v", err)
+		}
+
+		if errResp.Field != "email" {
+			t.Errorf("expected field 'email', got '%s'", errResp.Field)
+		}
+	})
+
+	// Test success case
+	t.Run("Success", func(t *testing.T) {
+		reqBody := CreateUserRequest{
+			Name:  "John Doe",
+			Email: "john@example.com",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/items", bytes.NewReader(body)))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	})
+}
+
+func TestSproutWithoutErrorHints(t *testing.T) {
+	router := New()
+
+	// Register handler without error hints (still works)
+	GET(router, "/legacy", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "Legacy endpoint"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/legacy", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK, got %d", recorder.Code)
+	}
+}
+
+func TestErrorResponseValidation(t *testing.T) {
+	router := New()
+
+	// Handler that returns invalid error (missing required fields)
+	POST(router, "/invalid-error", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		// Return error with missing required field (Message is empty)
+		return nil, NotFoundError{
+			Resource: "user",
+			Message:  "", // Invalid! Message is required
+		}
+	}, WithErrors(NotFoundError{}))
+
+	reqBody := CreateUserRequest{
+		Name:  "Test User",
+		Email: "test@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/invalid-error", bytes.NewReader(body)))
+
+	// Should return 500 because error validation failed
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 (validation failed), got %d", recorder.Code)
+	}
+
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("Error response validation failed")) {
+		t.Errorf("expected validation error message, got: %s", recorder.Body.String())
+	}
+}
+
+func TestValidErrorResponseValidation(t *testing.T) {
+	router := New()
+
+	// Handler that returns valid error (all required fields present)
+	POST(router, "/valid-error", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return nil, NotFoundError{
+			Resource: "user",
+			Message:  "user not found",
+		}
+	}, WithErrors(NotFoundError{}))
+
+	reqBody := CreateUserRequest{
+		Name:  "Test User",
+		Email: "test@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/valid-error", bytes.NewReader(body)))
+
+	// Should return 404 because error is valid
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var errResp NotFoundError
+	if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if errResp.Resource != "user" || errResp.Message != "user not found" {
+		t.Errorf("unexpected error response: %+v", errResp)
+	}
+}
+
+func TestHandle(t *testing.T) {
+	router := New()
+
+	// Use handle directly for custom HTTP method
+	handle(router, "CUSTOM", "/custom", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "Custom method works!"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("CUSTOM", "/custom", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK, got %d", recorder.Code)
+	}
+
+	var resp HelloResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Message != "Custom method works!" {
+		t.Errorf("expected message 'Custom method works!', got %s", resp.Message)
+	}
+}

@@ -98,3 +98,106 @@ func Example() {
 	// Start the server
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
+
+// Example with typed error handling
+type NotFoundError struct {
+	Resource string `json:"resource" validate:"required"`
+	ID       string `json:"id" validate:"required"`
+}
+
+func (e NotFoundError) Error() string {
+	return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
+}
+
+func (e NotFoundError) StatusCode() int {
+	return http.StatusNotFound
+}
+
+func (e NotFoundError) ResponseBody() interface{} {
+	return e
+}
+
+type ConflictError struct {
+	Field   string `json:"field" validate:"required"`
+	Message string `json:"message" validate:"required"`
+}
+
+func (e ConflictError) Error() string {
+	return e.Message
+}
+
+func (e ConflictError) StatusCode() int {
+	return http.StatusConflict
+}
+
+func (e ConflictError) ResponseBody() interface{} {
+	return e
+}
+
+type UnauthorizedError struct {
+	Message string `json:"message" validate:"required"`
+}
+
+func (e UnauthorizedError) Error() string {
+	return e.Message
+}
+
+func (e UnauthorizedError) StatusCode() int {
+	return http.StatusUnauthorized
+}
+
+func (e UnauthorizedError) ResponseBody() interface{} {
+	return e
+}
+
+func Example_withErrorHandling() {
+	router := sprout.New()
+
+	// Register endpoint with expected error types
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		// Check if user already exists
+		if req.Email == "existing@example.com" {
+			return nil, ConflictError{
+				Field:   "email",
+				Message: "email already exists",
+			}
+		}
+
+		// Validate age
+		if req.Age < 18 {
+			return nil, UnauthorizedError{
+				Message: "must be 18 or older",
+			}
+		}
+
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created successfully",
+		}, nil
+	}, sprout.WithErrors(
+		NotFoundError{},
+		ConflictError{},
+		UnauthorizedError{},
+	))
+
+	// GET endpoint that may return NotFoundError
+	sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+		// Simulate user not found
+		if req.UserID == "00000000-0000-0000-0000-000000000000" {
+			return nil, NotFoundError{
+				Resource: "user",
+				ID:       req.UserID,
+			}
+		}
+
+		return &GetUserResponse{
+			UserID: req.UserID,
+			Name:   "John Doe",
+			Email:  "john@example.com",
+		}, nil
+	}, sprout.WithErrors(NotFoundError{}, UnauthorizedError{}))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
