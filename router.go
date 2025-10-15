@@ -28,6 +28,13 @@ type Config struct {
 	// The error parameter will be of type *Error, which can be extracted using errors.As().
 	// This provides access to ErrorKind for categorizing errors and returning custom responses.
 	ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
+
+	// StrictErrorTypes controls whether handlers must declare error types via WithErrors().
+	// When true (default), returning an undeclared error type results in 500 Internal Server Error.
+	// When false, undeclared errors are logged as warnings but still processed.
+	//
+	// This encourages explicit error type declarations for better API documentation.
+	StrictErrorTypes *bool
 }
 
 // New creates a new Sprout router with default configuration
@@ -39,6 +46,11 @@ func New() *Sprout {
 func NewWithConfig(config *Config) *Sprout {
 	if config == nil {
 		config = &Config{}
+	}
+	// Default to strict error type checking
+	if config.StrictErrorTypes == nil {
+		defaultStrict := true
+		config.StrictErrorTypes = &defaultStrict
 	}
 	return &Sprout{
 		Router:   httprouter.New(),
@@ -232,6 +244,16 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 				}
 
 				if !found {
+					// StrictErrorTypes is enabled by default
+					if *s.config.StrictErrorTypes {
+						log.Printf("ERROR: handler returned undeclared error type: %T (expected one of: %v)", err, cfg.expectedErrors)
+						handleError(s, w, req, &Error{
+							Kind:    ErrorKindUndeclaredError,
+							Message: fmt.Sprintf("handler returned undeclared error type: %T", err),
+							Err:     err,
+						})
+						return
+					}
 					log.Printf("WARNING: handler returned unexpected error type: %T (expected one of: %v)", err, cfg.expectedErrors)
 				}
 			}

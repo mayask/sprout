@@ -1639,3 +1639,245 @@ func TestErrorString(t *testing.T) {
 		})
 	}
 }
+
+// Test strict error type checking (default behavior)
+func TestStrictErrorTypesDefault(t *testing.T) {
+	router := New() // Default: strict = true
+
+	// Handler that returns undeclared error type
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Name == "trigger" {
+			// Return NotFoundError, but only ConflictError is declared
+			return nil, NotFoundError{Resource: "user", Message: "user not found"}
+		}
+		return &CreateUserResponse{ID: 1, Name: req.Name, Email: req.Email}, nil
+	}, WithErrors(ConflictError{})) // Only ConflictError declared, NOT NotFoundError
+
+	reqBody := CreateUserRequest{
+		Name:  "trigger",
+		Email: "test@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+	// Should return 500 because error type not declared and strict mode is on
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 (strict mode), got %d", recorder.Code)
+	}
+
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("undeclared_error_type")) {
+		t.Errorf("expected 'undeclared_error_type' in response, got: %s", recorder.Body.String())
+	}
+}
+
+// Test strict error type checking disabled
+func TestStrictErrorTypesDisabled(t *testing.T) {
+	falseVal := false
+	config := &Config{
+		StrictErrorTypes: &falseVal,
+	}
+	router := NewWithConfig(config)
+
+	// Handler that returns undeclared error type
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Name == "trigger" {
+			// Return NotFoundError, but only ConflictError is declared
+			return nil, NotFoundError{Resource: "user", Message: "user not found"}
+		}
+		return &CreateUserResponse{ID: 1, Name: req.Name, Email: req.Email}, nil
+	}, WithErrors(ConflictError{})) // Only ConflictError declared
+
+	reqBody := CreateUserRequest{
+		Name:  "trigger",
+		Email: "test@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+	// Should return 404 (error's status code) because strict mode is off
+	// The undeclared error is allowed with just a warning
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 (error's status), got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Should still get valid error response
+	var errResp NotFoundError
+	if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if errResp.Resource != "user" {
+		t.Errorf("expected resource 'user', got '%s'", errResp.Resource)
+	}
+}
+
+// Test declared errors work in strict mode
+func TestStrictErrorTypesDeclared(t *testing.T) {
+	router := New() // Default: strict = true
+
+	// Handler with properly declared error types
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Name == "notfound" {
+			return nil, NotFoundError{Resource: "user", Message: "user not found"}
+		}
+		if req.Name == "conflict" {
+			return nil, ConflictError{Field: "email", Message: "email exists"}
+		}
+		return &CreateUserResponse{ID: 1, Name: req.Name, Email: req.Email}, nil
+	}, WithErrors(NotFoundError{}, ConflictError{})) // Both error types declared
+
+	// Test NotFoundError (declared)
+	t.Run("NotFound", func(t *testing.T) {
+		reqBody := CreateUserRequest{
+			Name:  "notfound",
+			Email: "test@example.com",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+
+		var errResp NotFoundError
+		if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error response: %v", err)
+		}
+
+		if errResp.Resource != "user" {
+			t.Errorf("expected resource 'user', got '%s'", errResp.Resource)
+		}
+	})
+
+	// Test ConflictError (declared)
+	t.Run("Conflict", func(t *testing.T) {
+		reqBody := CreateUserRequest{
+			Name:  "conflict",
+			Email: "test@example.com",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+		if recorder.Code != http.StatusConflict {
+			t.Errorf("expected status 409, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+
+		var errResp ConflictError
+		if err := json.NewDecoder(recorder.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error response: %v", err)
+		}
+
+		if errResp.Field != "email" {
+			t.Errorf("expected field 'email', got '%s'", errResp.Field)
+		}
+	})
+}
+
+// Test explicitly enabling strict error types
+func TestStrictErrorTypesExplicitlyEnabled(t *testing.T) {
+	trueVal := true
+	config := &Config{
+		StrictErrorTypes: &trueVal,
+	}
+	router := NewWithConfig(config)
+
+	// Handler that returns undeclared error type
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Name == "trigger" {
+			return nil, NotFoundError{Resource: "user", Message: "user not found"}
+		}
+		return &CreateUserResponse{ID: 1, Name: req.Name, Email: req.Email}, nil
+	}, WithErrors(ConflictError{})) // Only ConflictError declared
+
+	reqBody := CreateUserRequest{
+		Name:  "trigger",
+		Email: "test@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+	// Should return 500 because error type not declared and strict mode is explicitly on
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 (strict mode), got %d", recorder.Code)
+	}
+
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("undeclared_error_type")) {
+		t.Errorf("expected 'undeclared_error_type' in response, got: %s", recorder.Body.String())
+	}
+}
+
+// Test custom error handler can intercept undeclared error types
+func TestStrictErrorTypesCustomHandler(t *testing.T) {
+	var capturedErrorKind ErrorKind
+
+	config := &Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// Extract ErrorKind
+			var sproutErr *Error
+			if errors.As(err, &sproutErr) {
+				capturedErrorKind = sproutErr.Kind
+			}
+
+			// Custom handling for undeclared errors
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway) // Use 502 to distinguish custom handling
+			json.NewEncoder(w).Encode(map[string]string{
+				"custom_handling": "true",
+				"error_kind":      string(capturedErrorKind),
+			})
+		},
+	}
+
+	router := NewWithConfig(config)
+
+	// Handler that returns undeclared error type
+	POST(router, "/test", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		if req.Name == "trigger" {
+			return nil, NotFoundError{Resource: "user", Message: "user not found"}
+		}
+		return &CreateUserResponse{ID: 1, Name: req.Name, Email: req.Email}, nil
+	}, WithErrors(ConflictError{})) // Only ConflictError declared
+
+	reqBody := CreateUserRequest{
+		Name:  "trigger",
+		Email: "test@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", bytes.NewReader(body)))
+
+	// Verify custom handler was invoked
+	if recorder.Code != http.StatusBadGateway {
+		t.Errorf("expected status 502 (custom handler), got %d", recorder.Code)
+	}
+
+	// Verify error kind was captured
+	if capturedErrorKind != ErrorKindUndeclaredError {
+		t.Errorf("expected ErrorKindUndeclaredError, got %s", capturedErrorKind)
+	}
+
+	// Verify custom response body
+	var resp map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["custom_handling"] != "true" {
+		t.Errorf("expected custom_handling 'true', got '%s'", resp["custom_handling"])
+	}
+
+	if resp["error_kind"] != "undeclared_error_type" {
+		t.Errorf("expected error_kind 'undeclared_error_type', got '%s'", resp["error_kind"])
+	}
+}

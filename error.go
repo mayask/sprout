@@ -25,6 +25,10 @@ const (
 	// ErrorKindErrorValidation indicates error response validation failed (internal error).
 	// This occurs when a typed error doesn't satisfy its validation constraints.
 	ErrorKindErrorValidation ErrorKind = "error_validation_error"
+
+	// ErrorKindUndeclaredError indicates a handler returned an undeclared error type (internal error).
+	// This occurs when StrictErrorTypes is enabled and a handler returns an error type not listed in WithErrors().
+	ErrorKindUndeclaredError ErrorKind = "undeclared_error_type"
 )
 
 // Error represents an error from Sprout's request processing pipeline.
@@ -61,7 +65,7 @@ func handleError(s *Sprout, w http.ResponseWriter, r *http.Request, err error) {
 		switch sproutErr.Kind {
 		case ErrorKindParse, ErrorKindValidation:
 			http.Error(w, sproutErr.Error(), http.StatusBadRequest)
-		case ErrorKindResponseValidation, ErrorKindErrorValidation:
+		case ErrorKindResponseValidation, ErrorKindErrorValidation, ErrorKindUndeclaredError:
 			http.Error(w, sproutErr.Error(), http.StatusInternalServerError)
 		default:
 			http.Error(w, sproutErr.Error(), http.StatusInternalServerError)
