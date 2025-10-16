@@ -20,6 +20,11 @@ type testNestedError struct {
 	Resource string        `json:"resource,omitempty"`
 }
 
+type testErrorWithHTTPTag struct {
+	testBaseError `http:"status=404"` // Anonymous with http tag - should still flatten
+	Resource      string              `json:"resource,omitempty"`
+}
+
 func TestToJSONMap_EmbeddedStructFlattening(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -70,6 +75,21 @@ func TestToJSONMap_EmbeddedStructFlattening(t *testing.T) {
 			expected: map[string]interface{}{
 				"code":    "NOT_FOUND",
 				"message": "Resource not found",
+			},
+		},
+		{
+			name: "embedded struct with http tag is still flattened",
+			input: testErrorWithHTTPTag{
+				testBaseError: testBaseError{
+					Code:    "NOT_FOUND",
+					Message: "Resource not found",
+				},
+				Resource: "user",
+			},
+			expected: map[string]interface{}{
+				"code":     "NOT_FOUND",
+				"message":  "Resource not found",
+				"resource": "user",
 			},
 		},
 	}

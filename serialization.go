@@ -104,12 +104,9 @@ func toJSONMap(v interface{}) map[string]interface{} {
 		field := typ.Field(i)
 		fieldValue := val.Field(i)
 
-		// Skip fields that should be excluded (only checks top-level tags)
-		if shouldExcludeFromJSON(field) {
-			continue
-		}
-
 		// Handle anonymous embedded structs by flattening their fields
+		// Process these BEFORE exclusion checks because embedded structs may have
+		// http tags (for status codes) but we still want to flatten their fields
 		if field.Anonymous && fieldValue.Kind() == reflect.Struct {
 			// Recursively flatten embedded struct fields into result
 			// Process embedded struct fields directly without calling Interface()
@@ -144,6 +141,13 @@ func toJSONMap(v interface{}) map[string]interface{} {
 					result[jsonName] = embeddedFieldValue.Interface()
 				}
 			}
+			continue
+		}
+
+		// Skip fields that should be excluded (only checks top-level tags)
+		// This is checked AFTER embedded struct handling so that embedded structs
+		// with http tags still get flattened
+		if shouldExcludeFromJSON(field) {
 			continue
 		}
 
