@@ -29,6 +29,14 @@ const (
 	// ErrorKindUndeclaredError indicates a handler returned an undeclared error type (internal error).
 	// This occurs when StrictErrorTypes is enabled and a handler returns an error type not listed in WithErrors().
 	ErrorKindUndeclaredError ErrorKind = "undeclared_error_type"
+
+	// ErrorKindNotFound indicates no route matched the request.
+	// This occurs when the requested path doesn't match any registered routes.
+	ErrorKindNotFound ErrorKind = "not_found"
+
+	// ErrorKindMethodNotAllowed indicates the HTTP method is not allowed for the requested route.
+	// This occurs when a route exists but doesn't support the requested HTTP method.
+	ErrorKindMethodNotAllowed ErrorKind = "method_not_allowed"
 )
 
 // Error represents an error from Sprout's request processing pipeline.
@@ -65,6 +73,10 @@ func handleError(s *Sprout, w http.ResponseWriter, r *http.Request, err error) {
 		switch sproutErr.Kind {
 		case ErrorKindParse, ErrorKindValidation:
 			http.Error(w, sproutErr.Error(), http.StatusBadRequest)
+		case ErrorKindNotFound:
+			http.Error(w, sproutErr.Error(), http.StatusNotFound)
+		case ErrorKindMethodNotAllowed:
+			http.Error(w, sproutErr.Error(), http.StatusMethodNotAllowed)
 		case ErrorKindResponseValidation, ErrorKindErrorValidation, ErrorKindUndeclaredError:
 			http.Error(w, sproutErr.Error(), http.StatusInternalServerError)
 		default:

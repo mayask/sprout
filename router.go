@@ -58,11 +58,30 @@ func NewWithConfig(config *Config) *Sprout {
 		defaultStrict := true
 		config.StrictErrorTypes = &defaultStrict
 	}
-	return &Sprout{
+
+	s := &Sprout{
 		Router:   httprouter.New(),
 		validate: validator.New(),
 		config:   config,
 	}
+
+	// Route 404 Not Found errors through ErrorHandler for consistent error handling
+	s.Router.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleError(s, w, r, &Error{
+			Kind:    ErrorKindNotFound,
+			Message: fmt.Sprintf("route not found: %s %s", r.Method, r.URL.Path),
+		})
+	})
+
+	// Route 405 Method Not Allowed errors through ErrorHandler for consistent error handling
+	s.Router.MethodNotAllowed = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleError(s, w, r, &Error{
+			Kind:    ErrorKindMethodNotAllowed,
+			Message: fmt.Sprintf("method not allowed: %s %s", r.Method, r.URL.Path),
+		})
+	})
+
+	return s
 }
 
 type Handle[Req, Resp any] func(context.Context, *Req) (*Resp, error)

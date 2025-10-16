@@ -552,6 +552,8 @@ Sprout provides specific error kinds to help you handle different error scenario
 |------------|-------------|----------------|
 | `ErrorKindParse` | Failed to parse request parameters (query, path, headers) | 400 Bad Request |
 | `ErrorKindValidation` | Request validation failed | 400 Bad Request |
+| `ErrorKindNotFound` | No route matched the request (404) | 404 Not Found |
+| `ErrorKindMethodNotAllowed` | HTTP method not allowed for route (405) | 405 Method Not Allowed |
 | `ErrorKindResponseValidation` | Response validation failed (internal error) | 500 Internal Server Error |
 | `ErrorKindErrorValidation` | Error response validation failed (internal error) | 500 Internal Server Error |
 | `ErrorKindUndeclaredError` | Handler returned undeclared error type (when `StrictErrorTypes` is enabled) | 500 Internal Server Error |
@@ -585,12 +587,16 @@ if errors.As(err, &sproutErr) {
 
 If no custom error handler is provided, Sprout uses sensible defaults:
 - **Parse/Validation errors**: Returns `400 Bad Request` with plain text error message
+- **404 Not Found**: Returns `404 Not Found` when no route matches
+- **405 Method Not Allowed**: Returns `405 Method Not Allowed` when route exists but method doesn't match
 - **Response/Error validation failures**: Returns `500 Internal Server Error` with plain text error message
 
 ```go
 // Uses default error handling
 router := sprout.New()
 ```
+
+**Note**: 404 and 405 errors automatically go through your custom `ErrorHandler` (if configured), giving you consistent error formatting across all error types.
 
 ### Custom Success Status Codes
 
@@ -669,9 +675,7 @@ router.RedirectFixedPath = true
 router.HandleMethodNotAllowed = true
 router.HandleOPTIONS = true
 
-// Set custom handlers
-router.NotFound = http.HandlerFunc(customNotFoundHandler)
-router.MethodNotAllowed = http.HandlerFunc(customMethodNotAllowedHandler)
+// Set custom panic handler
 router.PanicHandler = customPanicHandler
 
 // Serve static files

@@ -269,7 +269,7 @@ func (e ConflictError) Error() string {
 }
 
 type ValidationError struct {
-	_       struct{}  `http:"status=400"`
+	_       struct{} `http:"status=400"`
 	Fields  []string `json:"fields" validate:"required,min=1"`
 	Message string   `json:"message" validate:"required"`
 }
@@ -762,13 +762,13 @@ func TestJSONAutoExclusion(t *testing.T) {
 	router := New()
 
 	type ResponseWithAllTags struct {
-		_            struct{} `http:"status=200"`
-		PathField    string   `path:"id"`
-		QueryField   string   `query:"page"`
-		HeaderField  string   `header:"X-Custom"`
-		HTTPField    struct{} `http:"status=200"`
-		JSONField    string   `json:"data"`
-		NormalField  string   // No tags
+		_           struct{} `http:"status=200"`
+		PathField   string   `path:"id"`
+		QueryField  string   `query:"page"`
+		HeaderField string   `header:"X-Custom"`
+		HTTPField   struct{} `http:"status=200"`
+		JSONField   string   `json:"data"`
+		NormalField string   // No tags
 	}
 
 	GET(router, "/test/:id", func(ctx context.Context, req *EmptyRequest) (*ResponseWithAllTags, error) {
@@ -2077,4 +2077,264 @@ func TestMultipleRoutesWithBasePath(t *testing.T) {
 			t.Errorf("expected 'items', got '%s'", resp.Message)
 		}
 	})
+}
+
+// Test 404 Not Found with default error handler
+func TestNotFoundDefaultHandler(t *testing.T) {
+	router := New()
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "users"}, nil
+	})
+
+	// Request to non-existent route
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/nonexistent", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", recorder.Code)
+	}
+
+	// Should contain error message
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("not_found")) {
+		t.Errorf("expected 'not_found' in response, got: %s", recorder.Body.String())
+	}
+
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("GET /nonexistent")) {
+		t.Errorf("expected route info in response, got: %s", recorder.Body.String())
+	}
+}
+
+// Test 405 Method Not Allowed with default error handler
+func TestMethodNotAllowedDefaultHandler(t *testing.T) {
+	router := New()
+	router.HandleMethodNotAllowed = true // Enable 405 responses
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "users"}, nil
+	})
+
+	// Request with wrong method
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", nil))
+
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405, got %d", recorder.Code)
+	}
+
+	// Should contain error message
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("method_not_allowed")) {
+		t.Errorf("expected 'method_not_allowed' in response, got: %s", recorder.Body.String())
+	}
+}
+
+// Test 404 with custom error handler
+func TestNotFoundCustomHandler(t *testing.T) {
+	var capturedKind ErrorKind
+
+	config := &Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			var sproutErr *Error
+			if errors.As(err, &sproutErr) {
+				capturedKind = sproutErr.Kind
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error":   "custom_not_found",
+					"message": sproutErr.Message,
+					"path":    r.URL.Path,
+				})
+			}
+		},
+	}
+
+	router := NewWithConfig(config)
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "users"}, nil
+	})
+
+	// Request to non-existent route
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/nonexistent", nil))
+
+	// Verify error kind was captured
+	if capturedKind != ErrorKindNotFound {
+		t.Errorf("expected ErrorKindNotFound, got %s", capturedKind)
+	}
+
+	// Verify custom response
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", recorder.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["error"] != "custom_not_found" {
+		t.Errorf("expected 'custom_not_found', got '%s'", resp["error"])
+	}
+
+	if resp["path"] != "/nonexistent" {
+		t.Errorf("expected path '/nonexistent', got '%s'", resp["path"])
+	}
+}
+
+// Test 405 with custom error handler
+func TestMethodNotAllowedCustomHandler(t *testing.T) {
+	var capturedKind ErrorKind
+
+	config := &Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			var sproutErr *Error
+			if errors.As(err, &sproutErr) {
+				capturedKind = sproutErr.Kind
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error":  "custom_method_not_allowed",
+					"method": r.Method,
+					"path":   r.URL.Path,
+				})
+			}
+		},
+	}
+
+	router := NewWithConfig(config)
+	router.HandleMethodNotAllowed = true // Enable 405 responses
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "users"}, nil
+	})
+
+	// Request with wrong method
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", nil))
+
+	// Verify error kind was captured
+	if capturedKind != ErrorKindMethodNotAllowed {
+		t.Errorf("expected ErrorKindMethodNotAllowed, got %s", capturedKind)
+	}
+
+	// Verify custom response
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405, got %d", recorder.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["error"] != "custom_method_not_allowed" {
+		t.Errorf("expected 'custom_method_not_allowed', got '%s'", resp["error"])
+	}
+
+	if resp["method"] != "POST" {
+		t.Errorf("expected method 'POST', got '%s'", resp["method"])
+	}
+}
+
+// Test that all error kinds go through same handler
+func TestConsistentErrorHandling(t *testing.T) {
+	errorKinds := []ErrorKind{}
+
+	config := &Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			var sproutErr *Error
+			if errors.As(err, &sproutErr) {
+				errorKinds = append(errorKinds, sproutErr.Kind)
+
+				w.Header().Set("Content-Type", "application/json")
+				status := http.StatusInternalServerError
+				switch sproutErr.Kind {
+				case ErrorKindParse, ErrorKindValidation:
+					status = http.StatusBadRequest
+				case ErrorKindNotFound:
+					status = http.StatusNotFound
+				case ErrorKindMethodNotAllowed:
+					status = http.StatusMethodNotAllowed
+				}
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(map[string]string{
+					"kind":    string(sproutErr.Kind),
+					"message": sproutErr.Message,
+				})
+			}
+		},
+	}
+
+	router := NewWithConfig(config)
+	router.HandleMethodNotAllowed = true
+
+	type BadRequest struct {
+		Page int `query:"page" validate:"required,gte=1"`
+	}
+
+	GET(router, "/test", func(ctx context.Context, req *BadRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "ok"}, nil
+	})
+
+	// Test 404 - goes through ErrorHandler
+	t.Run("404 NotFound", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/nonexistent", nil))
+
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("expected 404, got %d", recorder.Code)
+		}
+
+		if recorder.Header().Get("Content-Type") != "application/json" {
+			t.Errorf("expected JSON content type")
+		}
+	})
+
+	// Test 405 - goes through ErrorHandler
+	t.Run("405 MethodNotAllowed", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", nil))
+
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected 405, got %d", recorder.Code)
+		}
+
+		if recorder.Header().Get("Content-Type") != "application/json" {
+			t.Errorf("expected JSON content type")
+		}
+	})
+
+	// Test 400 Validation - goes through ErrorHandler
+	t.Run("400 Validation", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/test", nil))
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", recorder.Code)
+		}
+
+		if recorder.Header().Get("Content-Type") != "application/json" {
+			t.Errorf("expected JSON content type")
+		}
+	})
+
+	// Verify all went through the same handler
+	if len(errorKinds) != 3 {
+		t.Errorf("expected 3 errors captured, got %d", len(errorKinds))
+	}
+
+	expectedKinds := map[ErrorKind]bool{
+		ErrorKindNotFound:         true,
+		ErrorKindMethodNotAllowed: true,
+		ErrorKindValidation:       true,
+	}
+
+	for _, kind := range errorKinds {
+		if !expectedKinds[kind] {
+			t.Errorf("unexpected error kind: %s", kind)
+		}
+	}
 }
