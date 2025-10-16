@@ -10,9 +10,10 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 - 🎯 **Multi-source parameter binding** - path, query, headers, and body in one struct
 - 📤 **Response headers** - set custom HTTP headers using struct tags
 - 🧹 **Auto-exclusion** - routing/metadata fields automatically excluded from JSON
+- 🔄 **Automatic type conversion** - strings to int, float, bool, etc.
+- 📭 **Empty responses** - return `nil` for empty responses, validated against type contract
 - 🚀 **High performance** - powered by httprouter
 - 📝 **Self-documenting APIs** - request/response contracts visible in code
-- 🔄 **Automatic type conversion** - strings to int, float, bool, etc.
 
 ## Installation
 
@@ -661,6 +662,34 @@ func (e RateLimitError) Error() string { return e.Message }
 ```
 
 **Auto-exclusion from JSON**: Fields with `path`, `query`, `header`, or `http` tags are automatically excluded from JSON serialization. You don't need to add `json:"-"` manually!
+
+### Empty Responses
+
+For endpoints that don't need to return data (like DELETE operations), you can define empty response types and return `nil`:
+
+```go
+// Define an empty response type
+type EmptyResponse struct{}
+
+// Or with a custom status code
+type NoContentResponse struct {
+    _ struct{} `http:"status=204"`
+}
+
+// Handler can return nil
+sprout.DELETE(router, "/users/:id", func(ctx context.Context, req *DeleteUserRequest) (*NoContentResponse, error) {
+    // ... delete logic ...
+    return nil, nil  // ✅ Returns 204 No Content with empty JSON body {}
+})
+```
+
+**How it works:**
+
+When a handler returns `nil` for the response, Sprout:
+1. Creates an empty instance of the declared response type
+2. Validates it against any validation tags
+3. If validation passes (no required fields), serializes it as `{}`
+4. If validation fails (has required fields), returns a validation error
 
 ## Access to httprouter Features
 

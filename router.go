@@ -342,16 +342,19 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			return
 		}
 
+		// Handle nil response by creating empty instance
+		if respDTO == nil {
+			respDTO = new(Resp)
+		}
+
 		// Validate response DTO
-		if respDTO != nil {
-			if err := s.validate.Struct(respDTO); err != nil {
-				handleError(s, w, req, &Error{
-					Kind:    ErrorKindResponseValidation,
-					Message: "response validation failed",
-					Err:     err,
-				})
-				return
-			}
+		if err := s.validate.Struct(respDTO); err != nil {
+			handleError(s, w, req, &Error{
+				Kind:    ErrorKindResponseValidation,
+				Message: "response validation failed",
+				Err:     err,
+			})
+			return
 		}
 
 		// Extract status code and headers from response struct tags

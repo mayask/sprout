@@ -2338,3 +2338,126 @@ func TestConsistentErrorHandling(t *testing.T) {
 		}
 	}
 }
+
+// Test nil response handling with empty struct
+func TestNilResponseWithEmptyStruct(t *testing.T) {
+	router := New()
+
+	// Empty response type with no required fields
+	type EmptyResponse struct{}
+
+	// Handler returns nil, should be converted to empty struct and serialized as {}
+	DELETE(router, "/users/:id", func(ctx context.Context, req *EmptyRequest) (*EmptyResponse, error) {
+		return nil, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("DELETE", "/users/123", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Should serialize as empty JSON object {}
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected empty JSON object {}, got %v", result)
+	}
+}
+
+// Test nil response with 204 No Content
+func TestNilResponseWithNoContent(t *testing.T) {
+	router := New()
+
+	// Empty response type with 204 status
+	type NoContentResponse struct {
+		_ struct{} `http:"status=204"`
+	}
+
+	// Handler returns nil, should serialize to {} with 204 status
+	DELETE(router, "/items/:id", func(ctx context.Context, req *EmptyRequest) (*NoContentResponse, error) {
+		return nil, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("DELETE", "/items/456", nil))
+
+	if recorder.Code != http.StatusNoContent {
+		t.Errorf("expected status 204, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Should serialize as empty JSON object {}
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected empty JSON object {}, got %v", result)
+	}
+}
+
+// Test nil response fails validation when response has required fields
+func TestNilResponseWithRequiredFields(t *testing.T) {
+	router := New()
+
+	// Response type with required field
+	type UserResponse struct {
+		ID int `json:"id" validate:"required,gt=0"`
+	}
+
+	// Handler returns nil, but response type has required fields
+	GET(router, "/users/:id", func(ctx context.Context, req *EmptyRequest) (*UserResponse, error) {
+		return nil, nil // This should fail validation!
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/users/123", nil))
+
+	// Should return 500 because validation failed
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 (validation failed), got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Should contain validation error message
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("response validation failed")) {
+		t.Errorf("expected validation error message, got: %s", recorder.Body.String())
+	}
+}
+
+// Test nil response works with optional fields (omitempty)
+func TestNilResponseWithOptionalFields(t *testing.T) {
+	router := New()
+
+	// Response type with only optional fields
+	type OptionalResponse struct {
+		Name  string `json:"name,omitempty"`
+		Email string `json:"email,omitempty"`
+	}
+
+	// Handler returns nil, all fields are optional so it should work
+	GET(router, "/optional", func(ctx context.Context, req *EmptyRequest) (*OptionalResponse, error) {
+		return nil, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/optional", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Should serialize as empty JSON object {} (omitempty skips zero values)
+	var result map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected empty JSON object {}, got %v", result)
+	}
+}
