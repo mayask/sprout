@@ -89,6 +89,7 @@ func shouldExcludeFromJSON(field reflect.StructField) bool {
 }
 
 // toJSONMap converts a struct to a map, excluding top-level fields with routing tags.
+// Anonymous embedded structs are flattened to match standard JSON encoding behavior.
 // Nested objects are included as-is (routing tags only matter at the top level).
 func toJSONMap(v interface{}) map[string]interface{} {
 	result := make(map[string]interface{})
@@ -105,6 +106,44 @@ func toJSONMap(v interface{}) map[string]interface{} {
 
 		// Skip fields that should be excluded (only checks top-level tags)
 		if shouldExcludeFromJSON(field) {
+			continue
+		}
+
+		// Handle anonymous embedded structs by flattening their fields
+		if field.Anonymous && fieldValue.Kind() == reflect.Struct {
+			// Recursively flatten embedded struct fields into result
+			// Process embedded struct fields directly without calling Interface()
+			// to handle unexported embedded types
+			embeddedType := fieldValue.Type()
+			for j := 0; j < embeddedType.NumField(); j++ {
+				embeddedField := embeddedType.Field(j)
+				embeddedFieldValue := fieldValue.Field(j)
+
+				// Skip fields that should be excluded
+				if shouldExcludeFromJSON(embeddedField) {
+					continue
+				}
+
+				// Get JSON field name
+				jsonName := embeddedField.Name
+				if jsonTag := embeddedField.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
+					parts := strings.Split(jsonTag, ",")
+					if parts[0] != "" {
+						jsonName = parts[0]
+					}
+					// Check for omitempty
+					if len(parts) > 1 && parts[1] == "omitempty" {
+						if embeddedFieldValue.IsZero() {
+							continue
+						}
+					}
+				}
+
+				// Add the embedded field to result
+				if embeddedFieldValue.CanInterface() {
+					result[jsonName] = embeddedFieldValue.Interface()
+				}
+			}
 			continue
 		}
 
