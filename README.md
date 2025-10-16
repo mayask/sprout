@@ -2,6 +2,47 @@
 
 A type-safe HTTP router for Go that provides automatic validation and parameter binding using struct tags. Built on top of [httprouter](https://github.com/julienschmidt/httprouter) for high performance.
 
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Parameter Binding](#parameter-binding)
+  - [Path Parameters](#path-parameters)
+  - [Query Parameters](#query-parameters)
+  - [Headers](#headers)
+  - [Request Body](#request-body)
+    - [Nested Objects in Request Body](#nested-objects-in-request-body)
+  - [Combining Multiple Sources](#combining-multiple-sources)
+- [Validation](#validation)
+  - [Common Validation Tags](#common-validation-tags)
+- [Supported HTTP Methods](#supported-http-methods)
+- [Base Path](#base-path)
+- [Type Conversion](#type-conversion)
+- [Error Handling](#error-handling)
+  - [Basic Error Responses](#basic-error-responses)
+  - [Typed Error Responses](#typed-error-responses)
+  - [Multiple Error Types](#multiple-error-types)
+  - [Strict Error Type Checking](#strict-error-type-checking)
+    - [Default Behavior (Strict Mode)](#default-behavior-strict-mode)
+    - [Disabling Strict Mode](#disabling-strict-mode)
+    - [Handling Undeclared Errors with Custom Error Handler](#handling-undeclared-errors-with-custom-error-handler)
+  - [Custom Error Handler](#custom-error-handler)
+    - [Using a Custom Error Handler](#using-a-custom-error-handler)
+    - [Error Kinds](#error-kinds)
+    - [Error Structure](#error-structure)
+    - [Default Error Handling](#default-error-handling)
+  - [Custom Success Status Codes](#custom-success-status-codes)
+  - [Custom Response Headers](#custom-response-headers)
+  - [Empty Responses](#empty-responses)
+- [Access to httprouter Features](#access-to-httprouter-features)
+- [Complete Example](#complete-example)
+- [Testing](#testing)
+- [Requirements](#requirements)
+- [Dependencies](#dependencies)
+- [License](#license)
+- [Contributing](#contributing)
+
 ## Features
 
 - ✨ **Type-safe handlers** using Go generics
