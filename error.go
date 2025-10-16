@@ -37,6 +37,10 @@ const (
 	// ErrorKindMethodNotAllowed indicates the HTTP method is not allowed for the requested route.
 	// This occurs when a route exists but doesn't support the requested HTTP method.
 	ErrorKindMethodNotAllowed ErrorKind = "method_not_allowed"
+
+	// ErrorKindSerialization indicates JSON serialization failed (internal error).
+	// This occurs when encoding a response or error to JSON fails.
+	ErrorKindSerialization ErrorKind = "serialization_error"
 )
 
 // Error represents an error from Sprout's request processing pipeline.
@@ -77,7 +81,7 @@ func handleError(s *Sprout, w http.ResponseWriter, r *http.Request, err error) {
 			http.Error(w, sproutErr.Error(), http.StatusNotFound)
 		case ErrorKindMethodNotAllowed:
 			http.Error(w, sproutErr.Error(), http.StatusMethodNotAllowed)
-		case ErrorKindResponseValidation, ErrorKindErrorValidation, ErrorKindUndeclaredError:
+		case ErrorKindResponseValidation, ErrorKindErrorValidation, ErrorKindUndeclaredError, ErrorKindSerialization:
 			http.Error(w, sproutErr.Error(), http.StatusInternalServerError)
 		default:
 			http.Error(w, sproutErr.Error(), http.StatusInternalServerError)

@@ -563,7 +563,12 @@ config := &sprout.Config{
             switch sproutErr.Kind {
             case sprout.ErrorKindParse, sprout.ErrorKindValidation:
                 status = http.StatusBadRequest
-            case sprout.ErrorKindResponseValidation, sprout.ErrorKindErrorValidation:
+            case sprout.ErrorKindNotFound:
+                status = http.StatusNotFound
+            case sprout.ErrorKindMethodNotAllowed:
+                status = http.StatusMethodNotAllowed
+            case sprout.ErrorKindResponseValidation, sprout.ErrorKindErrorValidation,
+                 sprout.ErrorKindUndeclaredError, sprout.ErrorKindSerialization:
                 status = http.StatusInternalServerError
             }
 
@@ -599,6 +604,7 @@ Sprout provides specific error kinds to help you handle different error scenario
 | `ErrorKindResponseValidation` | Response validation failed (internal error) | 500 Internal Server Error |
 | `ErrorKindErrorValidation` | Error response validation failed (internal error) | 500 Internal Server Error |
 | `ErrorKindUndeclaredError` | Handler returned undeclared error type (when `StrictErrorTypes` is enabled) | 500 Internal Server Error |
+| `ErrorKindSerialization` | JSON encoding failed (internal error) | 500 Internal Server Error |
 
 #### Error Structure
 

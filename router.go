@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -297,7 +296,6 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 				if !found {
 					// StrictErrorTypes is enabled by default
 					if *s.config.StrictErrorTypes {
-						log.Printf("ERROR: handler returned undeclared error type: %T (expected one of: %v)", err, cfg.expectedErrors)
 						handleError(s, w, req, &Error{
 							Kind:    ErrorKindUndeclaredError,
 							Message: fmt.Sprintf("handler returned undeclared error type: %T", err),
@@ -305,13 +303,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 						})
 						return
 					}
-					log.Printf("WARNING: handler returned unexpected error type: %T (expected one of: %v)", err, cfg.expectedErrors)
 				}
 			}
 
 			// Validate error response body
 			if validationErr := s.validate.Struct(err); validationErr != nil {
-				log.Printf("ERROR: error response validation failed: %v", validationErr)
 				handleError(s, w, req, &Error{
 					Kind:    ErrorKindErrorValidation,
 					Message: "error response validation failed",
@@ -336,8 +332,13 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 			}
 			w.WriteHeader(statusCode)
 			// Convert to map to exclude routing/metadata fields from JSON
-			if err := json.NewEncoder(w).Encode(toJSONMap(err)); err != nil {
-				http.Error(w, "Failed to encode error response", http.StatusInternalServerError)
+			if encodeErr := json.NewEncoder(w).Encode(toJSONMap(err)); encodeErr != nil {
+				// Note: headers already written, so handleError can't change the status code
+				handleError(s, w, req, &Error{
+					Kind:    ErrorKindSerialization,
+					Message: "failed to encode error response",
+					Err:     encodeErr,
+				})
 			}
 			return
 		}
@@ -379,8 +380,13 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 		// Serialize response
 		w.WriteHeader(statusCode)
 		// Convert to map to exclude routing/metadata fields from JSON
-		if err := json.NewEncoder(w).Encode(toJSONMap(respDTO)); err != nil {
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		if encodeErr := json.NewEncoder(w).Encode(toJSONMap(respDTO)); encodeErr != nil {
+			// Note: headers already written, so handleError can't change the status code
+			handleError(s, w, req, &Error{
+				Kind:    ErrorKindSerialization,
+				Message: "failed to encode response",
+				Err:     encodeErr,
+			})
 			return
 		}
 	}
