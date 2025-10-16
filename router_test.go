@@ -1881,3 +1881,200 @@ func TestStrictErrorTypesCustomHandler(t *testing.T) {
 		t.Errorf("expected error_kind 'undeclared_error_type', got '%s'", resp["error_kind"])
 	}
 }
+
+// Test base path functionality
+func TestBasePath(t *testing.T) {
+	config := &Config{
+		BasePath: "/api/v1",
+	}
+	router := NewWithConfig(config)
+
+	POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:    123,
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	})
+
+	// Request should be made to /api/v1/users, not /users
+	reqBody := CreateUserRequest{
+		Name:  "John Doe",
+		Email: "john@example.com",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	// Request to base path should work
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/api/v1/users", bytes.NewReader(body)))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK for /api/v1/users, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Request to route without base path should NOT work
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", bytes.NewReader(body)))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 for /users (no base path), got %d", recorder.Code)
+	}
+}
+
+// Test base path with trailing slash
+func TestBasePathWithTrailingSlash(t *testing.T) {
+	config := &Config{
+		BasePath: "/api/v1/", // Trailing slash should be handled
+	}
+	router := NewWithConfig(config)
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "success"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/api/v1/users", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK, got %d", recorder.Code)
+	}
+}
+
+// Test base path without leading slash
+func TestBasePathWithoutLeadingSlash(t *testing.T) {
+	config := &Config{
+		BasePath: "api/v1", // Missing leading slash should be handled
+	}
+	router := NewWithConfig(config)
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "success"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/api/v1/users", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK, got %d", recorder.Code)
+	}
+}
+
+// Test empty base path
+func TestEmptyBasePath(t *testing.T) {
+	config := &Config{
+		BasePath: "", // Empty base path should work like New()
+	}
+	router := NewWithConfig(config)
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "success"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/users", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK, got %d", recorder.Code)
+	}
+}
+
+// Test base path with path parameters
+func TestBasePathWithPathParams(t *testing.T) {
+	config := &Config{
+		BasePath: "/api/v1",
+	}
+	router := NewWithConfig(config)
+
+	type GetUserByIDRequest struct {
+		UserID string `path:"id" validate:"required"`
+	}
+
+	GET(router, "/users/:id", func(ctx context.Context, req *GetUserByIDRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "User ID: " + req.UserID}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/api/v1/users/123", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("expected status OK, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var resp HelloResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Message != "User ID: 123" {
+		t.Errorf("expected message 'User ID: 123', got '%s'", resp.Message)
+	}
+}
+
+// Test multiple routes with base path
+func TestMultipleRoutesWithBasePath(t *testing.T) {
+	config := &Config{
+		BasePath: "/api/v1",
+	}
+	router := NewWithConfig(config)
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "users"}, nil
+	})
+
+	POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:    1,
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	})
+
+	GET(router, "/items", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "items"}, nil
+	})
+
+	// Test GET /api/v1/users
+	t.Run("GET /users", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/api/v1/users", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status OK, got %d", recorder.Code)
+		}
+
+		var resp HelloResponse
+		json.NewDecoder(recorder.Body).Decode(&resp)
+		if resp.Message != "users" {
+			t.Errorf("expected 'users', got '%s'", resp.Message)
+		}
+	})
+
+	// Test POST /api/v1/users
+	t.Run("POST /users", func(t *testing.T) {
+		reqBody := CreateUserRequest{Name: "John", Email: "john@example.com"}
+		body, _ := json.Marshal(reqBody)
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/api/v1/users", bytes.NewReader(body)))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status OK, got %d", recorder.Code)
+		}
+	})
+
+	// Test GET /api/v1/items
+	t.Run("GET /items", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/api/v1/items", nil))
+
+		if recorder.Code != http.StatusOK {
+			t.Errorf("expected status OK, got %d", recorder.Code)
+		}
+
+		var resp HelloResponse
+		json.NewDecoder(recorder.Body).Decode(&resp)
+		if resp.Message != "items" {
+			t.Errorf("expected 'items', got '%s'", resp.Message)
+		}
+	})
+}

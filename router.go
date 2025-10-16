@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/julienschmidt/httprouter"
@@ -35,6 +36,11 @@ type Config struct {
 	//
 	// This encourages explicit error type declarations for better API documentation.
 	StrictErrorTypes *bool
+
+	// BasePath is a prefix prepended to all route paths registered with this router.
+	// For example, with BasePath="/api/v1", a route registered as "/users" becomes "/api/v1/users".
+	// Leading and trailing slashes are handled automatically.
+	BasePath string
 }
 
 // New creates a new Sprout router with default configuration
@@ -61,13 +67,39 @@ func NewWithConfig(config *Config) *Sprout {
 
 type Handle[Req, Resp any] func(context.Context, *Req) (*Resp, error)
 
+// joinPath joins base path and route path, handling slashes correctly
+func joinPath(basePath, routePath string) string {
+	// Clean up base path
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" {
+		return routePath
+	}
+
+	// Ensure base path starts with / and doesn't end with /
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+	basePath = strings.TrimSuffix(basePath, "/")
+
+	// Ensure route path starts with /
+	if !strings.HasPrefix(routePath, "/") {
+		routePath = "/" + routePath
+	}
+
+	return basePath + routePath
+}
+
 // handle is a helper that applies route config and registers a handler
 func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], opts ...RouteOption) {
 	cfg := &routeConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	s.Router.Handle(method, path, wrap(s, h, cfg))
+
+	// Prepend base path if configured
+	fullPath := joinPath(s.config.BasePath, path)
+
+	s.Router.Handle(method, fullPath, wrap(s, h, cfg))
 }
 
 // RouteOption is a function that configures a route

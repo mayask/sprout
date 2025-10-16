@@ -262,6 +262,23 @@ sprout.HEAD(router, "/path", handler)
 sprout.OPTIONS(router, "/path", handler)
 ```
 
+## Base Path
+
+You can define a base path that will be prepended to all routes registered with a router. This is useful for API versioning or organizing routes under a common prefix.
+
+```go
+config := &sprout.Config{
+    BasePath: "/api/v1",
+}
+router := sprout.NewWithConfig(config)
+
+// Register routes without the base path
+sprout.GET(router, "/users", handleListUsers)      // Accessible at /api/v1/users
+sprout.POST(router, "/users", handleCreateUser)    // Accessible at /api/v1/users
+sprout.GET(router, "/users/:id", handleGetUser)    // Accessible at /api/v1/users/:id
+sprout.DELETE(router, "/users/:id", handleDeleteUser) // Accessible at /api/v1/users/:id
+```
+
 ## Type Conversion
 
 Query parameters, path parameters, and headers are automatically converted from strings to the appropriate type:

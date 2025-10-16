@@ -11,6 +11,13 @@ import (
 	"github.com/mayask/sprout"
 )
 
+// Basic types for examples
+type EmptyRequest struct{}
+
+type HelloResponse struct {
+	Message string `json:"message" validate:"required"`
+}
+
 // Example 1: Simple POST with body validation
 type CreateUserRequest struct {
 	Name  string `json:"name" validate:"required,min=3,max=50"`
@@ -635,6 +642,44 @@ func Example_handlingUndeclaredErrorsInCustomHandler() {
 			Message: "User created successfully",
 		}, nil
 	}, sprout.WithErrors(ConflictError{}))
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+// Example with base path for API versioning
+func Example_withBasePath() {
+	// Create router with base path
+	config := &sprout.Config{
+		BasePath: "/api/v1",
+	}
+	router := sprout.NewWithConfig(config)
+
+	// All routes are automatically prefixed with /api/v1
+	sprout.GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "List of users"}, nil
+	})
+
+	sprout.POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:      123,
+			Name:    req.Name,
+			Email:   req.Email,
+			Message: "User created",
+		}, nil
+	})
+
+	type GetUserByIDRequest struct {
+		UserID string `path:"id" validate:"required"`
+	}
+
+	sprout.GET(router, "/users/:id", func(ctx context.Context, req *GetUserByIDRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: fmt.Sprintf("User %s details", req.UserID)}, nil
+	})
+
+	// Routes are accessible at:
+	// GET  /api/v1/users
+	// POST /api/v1/users
+	// GET  /api/v1/users/:id
 
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
