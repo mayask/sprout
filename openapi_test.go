@@ -1,0 +1,193 @@
+package sprout
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+)
+
+type conflictError struct {
+	_       struct{} `http:"status=409"`
+	Message string   `json:"message" validate:"required"`
+}
+
+func (e *conflictError) Error() string {
+	return e.Message
+}
+
+func TestSwaggerEndpointReturnsOpenAPIJSON(t *testing.T) {
+	router := New()
+
+	type SwaggerRequest struct {
+		ID     string `path:"id" validate:"required"`
+		Search string `query:"search"`
+	}
+
+	type SwaggerResponse struct {
+		Name string `json:"name" validate:"required"`
+	}
+
+	GET(router, "/users/:id", func(ctx context.Context, req *SwaggerRequest) (*SwaggerResponse, error) {
+		return &SwaggerResponse{Name: "demo"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/swagger", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected swagger endpoint to return 200, got %d", recorder.Code)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(recorder.Body.Bytes())
+	if err != nil {
+		t.Fatalf("failed to parse openapi document: %v", err)
+	}
+
+	pathItem := doc.Paths.Value("/users/{id}")
+	if pathItem == nil {
+		t.Fatalf("expected /users/{id} path in spec, got paths %v", pathKeys(doc.Paths))
+	}
+
+	op := pathItem.Get
+	if op == nil {
+		t.Fatalf("expected GET operation for /users/{id}")
+	}
+
+	if op.RequestBody != nil {
+		t.Fatalf("did not expect request body for GET operation")
+	}
+
+	var sawPathID, sawQuery bool
+	for _, p := range op.Parameters {
+		if p == nil || p.Value == nil {
+			continue
+		}
+		switch p.Value.In {
+		case "path":
+			if p.Value.Name == "id" && p.Value.Required {
+				sawPathID = true
+			}
+		case "query":
+			if p.Value.Name == "search" && !p.Value.Required {
+				sawQuery = true
+			}
+		}
+	}
+
+	if !sawPathID {
+		t.Fatalf("expected path parameter {id}")
+	}
+	if !sawQuery {
+		t.Fatalf("expected optional query parameter 'search'")
+	}
+
+	resp := op.Responses.Value("200")
+	if resp == nil || resp.Value == nil {
+		t.Fatalf("expected 200 response in spec")
+	}
+
+	media := resp.Value.Content["application/json"]
+	if media == nil || media.Schema == nil {
+		t.Fatalf("expected application/json schema")
+	}
+
+	if media.Schema.Ref != "#/components/schemas/sprout_SwaggerResponse" {
+		t.Fatalf("expected schema ref to sprout_SwaggerResponse, got %s", media.Schema.Ref)
+	}
+
+	if op.Responses.Value("default") == nil {
+		t.Fatalf("expected default response to be registered")
+	}
+
+	yamlDoc, err := router.OpenAPIYAML()
+	if err != nil {
+		t.Fatalf("failed to generate openapi yaml: %v", err)
+	}
+
+	if !strings.Contains(string(yamlDoc), "/users/{id}") {
+		t.Fatalf("expected yaml output to include path /users/{id}")
+	}
+}
+
+func TestOpenAPIRequestBodyAndErrors(t *testing.T) {
+	router := New()
+
+	type CreateUserDTO struct {
+		Name  string `json:"name" validate:"required"`
+		Email string `json:"email" validate:"required,email"`
+	}
+
+	type CreateUserResponse struct {
+		ID int `json:"id" validate:"required"`
+	}
+
+	POST(router, "/users", func(ctx context.Context, req *CreateUserDTO) (*CreateUserResponse, error) {
+		return nil, &conflictError{Message: "exists"}
+	}, WithErrors(&conflictError{}))
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(specBytes)
+	if err != nil {
+		t.Fatalf("failed to parse openapi json: %v", err)
+	}
+
+	pathItem := doc.Paths.Value("/users")
+	if pathItem == nil {
+		t.Fatalf("expected /users path in document")
+	}
+
+	op := pathItem.Post
+	if op == nil {
+		t.Fatalf("expected POST operation for /users")
+	}
+
+	if op.RequestBody == nil || op.RequestBody.Value == nil {
+		t.Fatalf("expected request body to be documented")
+	}
+
+	if !op.RequestBody.Value.Required {
+		t.Fatalf("expected request body to be required")
+	}
+
+	media := op.RequestBody.Value.Content["application/json"]
+	if media == nil || media.Schema == nil {
+		t.Fatalf("expected request body schema")
+	}
+
+	if media.Schema.Ref != "#/components/schemas/sprout_CreateUserDTO" {
+		t.Fatalf("expected request schema ref, got %s", media.Schema.Ref)
+	}
+
+	resp := op.Responses.Value("409")
+	if resp == nil || resp.Value == nil {
+		t.Fatalf("expected 409 response for conflict error")
+	}
+
+	if _, ok := doc.Components.Schemas["sprout_conflictError"]; !ok {
+		t.Fatalf("expected conflict error schema registered in components")
+	}
+}
+
+func pathKeys(paths *openapi3.Paths) []string {
+	if paths == nil {
+		return nil
+	}
+	m := paths.Map()
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}

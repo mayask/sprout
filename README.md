@@ -347,6 +347,40 @@ sprout.GET(apiV1, "/status", handleStatus) // -> /api/v1/status
 
 Pass a full `sprout.Config` when mounting to override behavior per router (for example a distinct error handler or `StrictErrorTypes` flag) while leaving the parent untouched.
 
+## OpenAPI & Swagger
+
+Sprout now generates an OpenAPI 3.0 document using [kin-openapi](https://github.com/getkin/kin-openapi). Every registered route contributes path metadata, request/response schemas, and declared errors.
+
+- The document is served at `/swagger` (or `<BasePath>/swagger` when a base path is configured).  
+- JSON is returned by default; append `?format=yaml` for a YAML response.
+- Programmatic access is available through `router.OpenAPIJSON()` and `router.OpenAPIYAML()`.
+
+```go
+router := sprout.New()
+sprout.POST(router, "/users", handleCreateUser)
+
+// Persist the generated spec
+if data, err := router.OpenAPIJSON(); err == nil {
+    _ = os.WriteFile("openapi.json", data, 0o644)
+}
+```
+
+Schemas are derived from your request/response DTOs, path/query/header tags become parameters, and `WithErrors` contributes typed error responses—keeping the documentation aligned with the handlers.
+
+### Sample Server
+
+A runnable example lives in `cmd/demo/main.go`. Start it with:
+
+```bash
+go run ./cmd/demo
+```
+
+Browse endpoints like:
+
+- `GET http://localhost:8080/ping`
+- `POST http://localhost:8080/users`
+- `GET http://localhost:8080/swagger` (append `?format=yaml` for YAML)
+
 ## Type Conversion
 
 Query parameters, path parameters, and headers are automatically converted from strings to the appropriate type:

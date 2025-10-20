@@ -18,6 +18,7 @@ type Sprout struct {
 	*httprouter.Router
 	validate *validator.Validate
 	config   *Config
+	openapi  *openAPIDocument
 }
 
 // Config holds configuration options for customizing Sprout's behavior.
@@ -62,6 +63,7 @@ func NewWithConfig(config *Config) *Sprout {
 		Router:   httprouter.New(),
 		validate: validator.New(),
 		config:   config,
+		openapi:  newOpenAPIDocument(),
 	}
 
 	// Route 404 Not Found errors through ErrorHandler for consistent error handling
@@ -79,6 +81,10 @@ func NewWithConfig(config *Config) *Sprout {
 			Message: fmt.Sprintf("method not allowed: %s %s", r.Method, r.URL.Path),
 		})
 	})
+
+	// Expose generated OpenAPI specification
+	swaggerPath := joinPath(s.config.BasePath, "/swagger")
+	s.Router.GET(swaggerPath, s.openapi.ServeHTTP)
 
 	return s
 }
@@ -134,6 +140,10 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	// Prepend base path if configured
 	fullPath := joinPath(s.config.BasePath, path)
 
+	if s.openapi != nil {
+		s.openapi.RegisterRoute(method, fullPath, typeOf[Req](), typeOf[Resp](), cfg.expectedErrors)
+	}
+
 	s.Router.Handle(method, fullPath, wrap(s, h, cfg))
 }
 
@@ -160,6 +170,7 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 		Router:   s.Router,
 		validate: s.validate,
 		config:   &childConfig,
+		openapi:  s.openapi,
 	}
 }
 
