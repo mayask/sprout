@@ -16,6 +16,15 @@ type HelloResponse struct {
 	Message string `json:"message" validate:"required"`
 }
 
+type TeapotError struct {
+	_   struct{} `http:"status=418"`
+	Msg string   `json:"message" validate:"required"`
+}
+
+func (e *TeapotError) Error() string {
+	return e.Msg
+}
+
 func TestSproutBasic(t *testing.T) {
 	router := New()
 	GET(router, "/", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
@@ -2077,6 +2086,185 @@ func TestMultipleRoutesWithBasePath(t *testing.T) {
 			t.Errorf("expected 'items', got '%s'", resp.Message)
 		}
 	})
+}
+
+func TestNestedRouterMountsPrefix(t *testing.T) {
+	router := New()
+	auth := router.Mount("/auth", nil)
+
+	GET(auth, "/login", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "auth-login"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/auth/login", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", recorder.Code)
+	}
+
+	var resp HelloResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Message != "auth-login" {
+		t.Errorf("expected message 'auth-login', got '%s'", resp.Message)
+	}
+
+	// Without prefix the route should not be found.
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/login", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 for missing prefix, got %d", recorder.Code)
+	}
+}
+
+func TestNestedRouterWithParentBasePath(t *testing.T) {
+	router := NewWithConfig(&Config{
+		BasePath: "/api",
+	})
+
+	auth := router.Mount("/auth", nil)
+
+	GET(auth, "/login", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "auth-login"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/api/auth/login", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d", recorder.Code)
+	}
+
+	var resp HelloResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Message != "auth-login" {
+		t.Errorf("expected message 'auth-login', got '%s'", resp.Message)
+	}
+
+	// Requests missing either prefix should be 404.
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/auth/login", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 without base path, got %d", recorder.Code)
+	}
+}
+
+func TestNestedRouterInheritsErrorHandler(t *testing.T) {
+	var handled bool
+
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			handled = true
+			w.WriteHeader(599)
+			w.Write([]byte("custom error"))
+		},
+	})
+
+	auth := router.Mount("/auth", nil)
+
+	type AuthRequest struct {
+		Token string `header:"Authorization" validate:"required"`
+	}
+
+	GET(auth, "/login", func(ctx context.Context, req *AuthRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "should not reach"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/auth/login", nil))
+
+	if !handled {
+		t.Fatalf("expected parent error handler to be invoked")
+	}
+
+	if recorder.Code != 599 {
+		t.Fatalf("expected status 599 from custom error handler, got %d", recorder.Code)
+	}
+
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("custom error")) {
+		t.Errorf("expected custom error body, got %s", recorder.Body.String())
+	}
+}
+
+func TestNestedRouterOverridesErrorHandler(t *testing.T) {
+	var parentCalled bool
+	var childCalled bool
+
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			parentCalled = true
+			w.WriteHeader(597)
+			w.Write([]byte("parent error"))
+		},
+	})
+
+	child := router.Mount("/child", &Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			childCalled = true
+			w.WriteHeader(598)
+			w.Write([]byte("child error"))
+		},
+	})
+
+	type ChildRequest struct {
+		Token string `header:"Authorization" validate:"required"`
+	}
+
+	GET(child, "/secure", func(ctx context.Context, req *ChildRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "should not reach"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/child/secure", nil))
+
+	if parentCalled {
+		t.Fatalf("expected parent error handler to be skipped")
+	}
+
+	if !childCalled {
+		t.Fatalf("expected child error handler to be invoked")
+	}
+
+	if recorder.Code != 598 {
+		t.Fatalf("expected status 598 from child error handler, got %d", recorder.Code)
+	}
+}
+
+func TestNestedRouterOverridesStrictFlag(t *testing.T) {
+	router := New()
+
+	strictFalse := false
+	child := router.Mount("/loose", &Config{
+		StrictErrorTypes: &strictFalse,
+	})
+
+	GET(child, "/test", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, &TeapotError{Msg: "teapot"}
+	}, WithErrors(&Error{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/loose/test", nil))
+
+	if recorder.Code != 418 {
+		t.Fatalf("expected status 418 from custom error, got %d", recorder.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["message"] != "teapot" {
+		t.Errorf("expected message 'teapot', got %s", resp["message"])
+	}
 }
 
 // Test 404 Not Found with default error handler

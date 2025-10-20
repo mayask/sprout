@@ -107,6 +107,23 @@ func joinPath(basePath, routePath string) string {
 	return basePath + routePath
 }
 
+// combineBasePath merges multiple path segments into a normalized base path.
+func combineBasePath(paths ...string) string {
+	var result string
+	for _, segment := range paths {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || segment == "/" {
+			continue
+		}
+		result = joinPath(result, segment)
+	}
+
+	if result == "" || result == "/" {
+		return ""
+	}
+	return strings.TrimSuffix(result, "/")
+}
+
 // handle is a helper that applies route config and registers a handler
 func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], opts ...RouteOption) {
 	cfg := &routeConfig{}
@@ -118,6 +135,32 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	fullPath := joinPath(s.config.BasePath, path)
 
 	s.Router.Handle(method, fullPath, wrap(s, h, cfg))
+}
+
+// Mount creates a child router that shares the underlying router and validator.
+// The child inherits configuration such as error handlers, while applying an additional base path prefix.
+func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
+	var childConfig Config
+	if config != nil {
+		childConfig = *config
+	}
+
+	if childConfig.ErrorHandler == nil {
+		childConfig.ErrorHandler = s.config.ErrorHandler
+	}
+
+	if childConfig.StrictErrorTypes == nil {
+		strict := *s.config.StrictErrorTypes
+		childConfig.StrictErrorTypes = &strict
+	}
+
+	childConfig.BasePath = combineBasePath(s.config.BasePath, prefix, childConfig.BasePath)
+
+	return &Sprout{
+		Router:   s.Router,
+		validate: s.validate,
+		config:   &childConfig,
+	}
 }
 
 // RouteOption is a function that configures a route

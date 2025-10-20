@@ -18,6 +18,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
   - [Common Validation Tags](#common-validation-tags)
 - [Supported HTTP Methods](#supported-http-methods)
 - [Base Path](#base-path)
+- [Nested Routers](#nested-routers)
 - [Type Conversion](#type-conversion)
 - [Error Handling](#error-handling)
   - [Basic Error Responses](#basic-error-responses)
@@ -320,6 +321,31 @@ sprout.POST(router, "/users", handleCreateUser)    // Accessible at /api/v1/user
 sprout.GET(router, "/users/:id", handleGetUser)    // Accessible at /api/v1/users/:id
 sprout.DELETE(router, "/users/:id", handleDeleteUser) // Accessible at /api/v1/users/:id
 ```
+
+## Nested Routers
+
+Create nested routers with shared error handling and path prefixes using `Mount`:
+
+```go
+router := sprout.New()
+
+auth := router.Mount("/auth", nil)
+sprout.POST(auth, "/login", handleAuthLogin)   // -> /auth/login
+sprout.POST(auth, "/register", handleSignUp)   // -> /auth/register
+
+api := router.Mount("/api", nil)
+admin := api.Mount("/admin", nil)
+sprout.GET(admin, "/users", handleAdminUsers)  // -> /api/admin/users
+```
+
+Child routers automatically reuse the parent's error handler and validator. Their base path is the combination of the parent's base path, the mount prefix, and any optional base path provided via the child configuration:
+
+```go
+apiV1 := router.Mount("/api", &sprout.Config{BasePath: "/v1"})
+sprout.GET(apiV1, "/status", handleStatus) // -> /api/v1/status
+```
+
+Pass a full `sprout.Config` when mounting to override behavior per router (for example a distinct error handler or `StrictErrorTypes` flag) while leaving the parent untouched.
 
 ## Type Conversion
 
