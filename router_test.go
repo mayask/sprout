@@ -12,6 +12,20 @@ import (
 
 type EmptyRequest struct{}
 
+type bodyTrackingRecorder struct {
+	*httptest.ResponseRecorder
+	wroteBody bool
+}
+
+func newBodyTrackingRecorder() *bodyTrackingRecorder {
+	return &bodyTrackingRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *bodyTrackingRecorder) Write(b []byte) (int, error) {
+	r.wroteBody = true
+	return r.ResponseRecorder.Write(b)
+}
+
 type HelloResponse struct {
 	Message string `json:"message" validate:"required"`
 }
@@ -766,6 +780,60 @@ func TestCustomContentType(t *testing.T) {
 	})
 }
 
+type NoBodyError struct {
+	_ struct{} `http:"status=204"`
+}
+
+func (e *NoBodyError) Error() string {
+	return "no body allowed"
+}
+
+func TestErrorResponseSkipsBodyWhenNotAllowed(t *testing.T) {
+	router := New()
+
+	GET(router, "/no-body-error", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, &NoBodyError{}
+	}, WithErrors(&NoBodyError{}))
+
+	recorder := newBodyTrackingRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/no-body-error", nil))
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d", recorder.Code)
+	}
+
+	if recorder.wroteBody {
+		t.Fatalf("expected no body to be written for 204 responses")
+	}
+
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected empty body, got %q", recorder.Body.String())
+	}
+}
+
+func TestHeadResponseSkipsBody(t *testing.T) {
+	router := New()
+
+	HEAD(router, "/head", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "should not be sent"}, nil
+	})
+
+	recorder := newBodyTrackingRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("HEAD", "/head", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+
+	if recorder.wroteBody {
+		t.Fatalf("expected no body to be written for HEAD responses")
+	}
+
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected empty body, got %q", recorder.Body.String())
+	}
+}
+
 // Test automatic exclusion of routing/metadata fields from JSON
 func TestJSONAutoExclusion(t *testing.T) {
 	router := New()
@@ -1021,14 +1089,9 @@ func TestJSONAutoExclusionAllFieldsExcluded(t *testing.T) {
 		t.Errorf("expected X-Custom header 'test', got '%s'", header)
 	}
 
-	// Should return empty JSON object {}
-	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatalf("failed to unmarshal JSON: %v", err)
-	}
-
-	if len(result) != 0 {
-		t.Errorf("expected empty JSON object {}, got %v", result)
+	// 204 responses must not include a body
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected empty body for 204 response, got %q", recorder.Body.String())
 	}
 }
 
@@ -2578,14 +2641,9 @@ func TestNilResponseWithNoContent(t *testing.T) {
 		t.Errorf("expected status 204, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 
-	// Should serialize as empty JSON object {}
-	var result map[string]interface{}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
-		t.Fatalf("failed to unmarshal JSON: %v", err)
-	}
-
-	if len(result) != 0 {
-		t.Errorf("expected empty JSON object {}, got %v", result)
+	// 204 responses must not include a body
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected empty body for 204 response, got %q", recorder.Body.String())
 	}
 }
 

@@ -385,6 +385,9 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 				w.Header().Set("Content-Type", "application/json")
 			}
 			w.WriteHeader(statusCode)
+			if !shouldWriteBody(req.Method, statusCode) {
+				return
+			}
 			// Convert to map to exclude routing/metadata fields from JSON
 			if encodeErr := json.NewEncoder(w).Encode(toJSONMap(err)); encodeErr != nil {
 				// Note: headers already written, so handleError can't change the status code
@@ -433,6 +436,9 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 
 		// Serialize response
 		w.WriteHeader(statusCode)
+		if !shouldWriteBody(req.Method, statusCode) {
+			return
+		}
 		// Convert to map to exclude routing/metadata fields from JSON
 		if encodeErr := json.NewEncoder(w).Encode(toJSONMap(respDTO)); encodeErr != nil {
 			// Note: headers already written, so handleError can't change the status code
@@ -479,4 +485,22 @@ func PATCH[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...R
 // DELETE is a shortcut for Handle(s, http.MethodDelete, path, h, opts...)
 func DELETE[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
 	handle(s, http.MethodDelete, path, h, opts...)
+}
+
+// shouldWriteBody determines whether a response body is allowed for the given method/status combination.
+func shouldWriteBody(method string, status int) bool {
+	if method == http.MethodHead {
+		return false
+	}
+
+	if status >= 100 && status < 200 {
+		return false
+	}
+
+	switch status {
+	case http.StatusNoContent, http.StatusResetContent, http.StatusNotModified:
+		return false
+	}
+
+	return true
 }
