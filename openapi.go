@@ -1,6 +1,7 @@
 package sprout
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -321,16 +322,20 @@ func (d *openAPIDocument) ServeHTTP(w http.ResponseWriter, r *http.Request, _ ht
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write(bytes)
 	default:
-		bytes, err := d.marshalJSONLocked()
+		data, err := d.marshalJSONLocked()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(bytes)
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, data, "", "  "); err == nil {
+			data = pretty.Bytes()
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write(data)
 	}
 }
 
@@ -343,18 +348,7 @@ func (d *openAPIDocument) marshalJSONLocked() ([]byte, error) {
 func (d *openAPIDocument) marshalYAMLLocked() ([]byte, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
-	data, err := d.doc.MarshalJSON()
-	if err != nil {
-		return nil, err
-	}
-
-	var payload interface{}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, err
-	}
-
-	return yaml.Marshal(payload)
+	return yaml.Marshal(d.doc)
 }
 
 func (s *Sprout) OpenAPIJSON() ([]byte, error) {
