@@ -2,9 +2,12 @@ package sprout
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +17,7 @@ func TestMiddlewareOrderBeforeRoute(t *testing.T) {
 
 	router.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
 		events = append(events, "global-before")
-		next()
+		next(nil)
 	})
 
 	GET(router, "/hit", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
@@ -45,7 +48,7 @@ func TestMiddlewareAfterRouteWithoutNext(t *testing.T) {
 
 	router.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
 		events = append(events, "global-after")
-		next()
+		next(nil)
 	})
 
 	recorder := httptest.NewRecorder()
@@ -132,7 +135,7 @@ func TestChildMiddlewareIsolation(t *testing.T) {
 
 	child.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
 		events = append(events, "child-middleware")
-		next()
+		next(nil)
 	})
 
 	GET(child, "/hit", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
@@ -165,7 +168,7 @@ func TestChildMiddlewareOrder(t *testing.T) {
 
 	child.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
 		events = append(events, "child-middleware-before")
-		next()
+		next(nil)
 	})
 
 	GET(child, "/hit", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
@@ -222,7 +225,7 @@ func TestChildMiddlewareNotTriggeredWhenPrefixMismatch(t *testing.T) {
 
 	child.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
 		events = append(events, "child-middleware")
-		next()
+		next(nil)
 	})
 
 	GET(child, "/hit", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
@@ -244,6 +247,74 @@ func TestChildMiddlewareNotTriggeredWhenPrefixMismatch(t *testing.T) {
 
 	if diff := cmpStringSlices(events, []string{"parent-route"}); diff != "" {
 		t.Fatalf("unexpected events: %s", diff)
+	}
+}
+
+func TestMiddlewareNextWithTypedError(t *testing.T) {
+	router := New()
+	var routeCalled bool
+
+	router.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
+		next(&TeapotError{Msg: "brew fail"})
+	})
+
+	GET(router, "/tea", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		routeCalled = true
+		return &HelloResponse{Message: "tea"}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/tea", nil))
+
+	if routeCalled {
+		t.Fatalf("route should not run when middleware raises an error")
+	}
+
+	if recorder.Code != http.StatusTeapot {
+		t.Fatalf("expected status 418, got %d", recorder.Code)
+	}
+
+	var payload map[string]string
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if payload["message"] != "brew fail" {
+		t.Fatalf("unexpected error payload: %#v", payload)
+	}
+}
+
+func TestMiddlewareNextWithGenericErrorUsesErrorHandler(t *testing.T) {
+	handled := false
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			handled = true
+			http.Error(w, "custom: "+err.Error(), http.StatusBadRequest)
+		},
+	})
+
+	router.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
+		next(errors.New("boom"))
+	})
+
+	GET(router, "/hit", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		t.Fatalf("handler should not run after middleware error")
+		return nil, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/hit", nil))
+
+	if !handled {
+		t.Fatalf("expected custom error handler to run")
+	}
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", recorder.Code)
+	}
+
+	if body := strings.TrimSpace(recorder.Body.String()); !strings.Contains(body, "custom: boom") {
+		t.Fatalf("unexpected body: %q", body)
 	}
 }
 

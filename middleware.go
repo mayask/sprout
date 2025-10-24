@@ -16,7 +16,8 @@ import (
 type Middleware func(http.ResponseWriter, *http.Request, Next)
 
 // Next advances to the next middleware or handler in the chain.
-type Next func()
+// Pass a non-nil error to short-circuit the chain and trigger Sprout's error handling.
+type Next func(error)
 
 // ErrNext signals a typed handler should delegate to the next middleware.
 var ErrNext = errors.New("sprout: next")
@@ -96,7 +97,7 @@ func (s *Sprout) dispatchRoute(w http.ResponseWriter, req *http.Request, ps http
 	chain = append(chain, entry.fn)
 	chain = append(chain, after...)
 
-	runChain(chain, w, req)
+	runChain(chain, entry.owner, w, req)
 }
 
 // dispatchFallback runs the middleware chain for the path and then invokes the
@@ -119,7 +120,7 @@ func (s *Sprout) dispatchFallback(w http.ResponseWriter, req *http.Request, fall
 		})
 	}
 
-	runChain(chain, w, req)
+	runChain(chain, s, w, req)
 }
 
 // gatherRouteMiddleware collates middleware from root → leaf routers and
@@ -158,22 +159,44 @@ func collectMiddlewareLayers(routers []*Sprout) []middlewareLayer {
 
 // runChain executes middleware sequentially by wiring each layer's next()
 // callback to the subsequent layer.
-func runChain(chain []Middleware, w http.ResponseWriter, req *http.Request) {
+func runChain(chain []Middleware, owner *Sprout, w http.ResponseWriter, req *http.Request) {
 	if len(chain) == 0 {
 		return
 	}
 
-	var exec func(int)
-	exec = func(idx int) {
+	var exec func(int, error)
+	exec = func(idx int, err error) {
+		if err != nil {
+			if errors.Is(err, ErrNext) {
+				err = nil
+			}
+			if err != nil {
+				owner.handleChainError(w, req, err)
+				return
+			}
+		}
+
 		if idx >= len(chain) {
 			return
 		}
-		chain[idx](w, req, func() {
-			exec(idx + 1)
+		chain[idx](w, req, func(nextErr error) {
+			exec(idx+1, nextErr)
 		})
 	}
 
-	exec(0)
+	exec(0, nil)
+}
+
+func (s *Sprout) handleChainError(w http.ResponseWriter, req *http.Request, err error) {
+	if err == nil {
+		return
+	}
+
+	if writeTypedErrorResponse(s, w, req, err, http.StatusInternalServerError) {
+		return
+	}
+
+	handleError(s, w, req, err)
 }
 
 type contextKey string

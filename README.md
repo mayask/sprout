@@ -355,10 +355,15 @@ Attach middleware to any router with `Use()`. Middleware runs in the order it is
 ```go
 router := sprout.New()
 
+type AuthError struct {
+	_       struct{} `http:"status=401"`
+	Message string   `json:"message" validate:"required"`
+}
+
 // Global logging middleware
 router.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
 	start := time.Now()
-	next() // continue to handlers
+	next(nil) // continue to handlers
 	log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start))
 })
 
@@ -367,10 +372,10 @@ api := router.Mount("/api", nil)
 // Scoped middleware for /api/*
 api.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
 	if r.Header.Get("Authorization") == "" {
-		http.Error(w, "missing auth", http.StatusUnauthorized)
+		next(&AuthError{Message: "missing auth"})
 		return
 	}
-	next()
+	next(nil)
 })
 
 sprout.GET(api, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
@@ -393,7 +398,7 @@ sprout.GET(router, "/dashboard", func(ctx context.Context, req *EmptyRequest) (*
 })
 
 router.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
-	// Runs when the handler called ErrNext or another middleware called next()
+	// Runs when the handler called ErrNext or another middleware called next(nil)
 	http.Redirect(w, r, "/upgrade", http.StatusFound)
 })
 ```
@@ -407,11 +412,11 @@ router.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
 	if params := sprout.Params(r); params != nil {
 		log.Printf("matched route params: %#v", params)
 	}
-	next()
+	next(nil)
 })
 ```
 
-> **Order matters:** Middleware registered before a route runs first. Middleware registered after a route only executes if the route (or earlier middleware) calls `next()` or returns `sprout.ErrNext`. Middleware defined on parent routers wraps middleware/routes defined on child routers, so global behaviour is applied automatically.
+> **Order matters:** Middleware registered before a route runs first. Middleware registered after a route only executes if the route (or earlier middleware) calls `next(nil)` or returns `sprout.ErrNext`. Middleware defined on parent routers wraps middleware/routes defined on child routers, so global behaviour is applied automatically. Use `next(err)` from any middleware to short-circuit the chain and run Sprout's error handling.
 
 ## OpenAPI & Swagger
 

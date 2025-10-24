@@ -385,7 +385,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		respDTO, err := handle(ctx, &reqDTO)
 		if err != nil {
 			if errors.Is(err, ErrNext) {
-				next()
+				next(nil)
 				return
 			}
 
@@ -416,44 +416,11 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 					}
 				}
 			}
-
-			// Validate error response body
-			if validationErr := s.validate.Struct(err); validationErr != nil {
-				handleError(s, w, req, &Error{
-					Kind:    ErrorKindErrorValidation,
-					Message: "error response validation failed",
-					Err:     validationErr,
-				})
+			if writeTypedErrorResponse(s, w, req, err, http.StatusInternalServerError) {
 				return
 			}
 
-			// Extract status code and headers from struct tags (default to 500 for errors)
-			errType := reflect.TypeOf(err)
-			statusCode := extractStatusCode(errType, http.StatusInternalServerError)
-			customHeaders := extractHeaders(reflect.ValueOf(err))
-
-			// Set custom headers from struct tags
-			for name, value := range customHeaders {
-				w.Header().Set(name, value)
-			}
-
-			// Set Content-Type to application/json if not already set
-			if w.Header().Get("Content-Type") == "" {
-				w.Header().Set("Content-Type", "application/json")
-			}
-			w.WriteHeader(statusCode)
-			if !shouldWriteBody(req.Method, statusCode) {
-				return
-			}
-			// Convert to map to exclude routing/metadata fields from JSON
-			if encodeErr := json.NewEncoder(w).Encode(toJSONMap(err)); encodeErr != nil {
-				// Note: headers already written, so handleError can't change the status code
-				handleError(s, w, req, &Error{
-					Kind:    ErrorKindSerialization,
-					Message: "failed to encode error response",
-					Err:     encodeErr,
-				})
-			}
+			handleError(s, w, req, err)
 			return
 		}
 
@@ -542,6 +509,86 @@ func PATCH[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...R
 // DELETE is a shortcut for Handle(s, http.MethodDelete, path, h, opts...)
 func DELETE[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...RouteOption) {
 	handle(s, http.MethodDelete, path, h, opts...)
+}
+
+func writeTypedErrorResponse(s *Sprout, w http.ResponseWriter, req *http.Request, err error, defaultStatus int) bool {
+	if err == nil {
+		return false
+	}
+
+	errValue := reflect.ValueOf(err)
+	if !isStructLike(errValue) {
+		return false
+	}
+
+	if validationErr := s.validate.Struct(err); validationErr != nil {
+		handleError(s, w, req, &Error{
+			Kind:    ErrorKindErrorValidation,
+			Message: "error response validation failed",
+			Err:     validationErr,
+		})
+		return true
+	}
+
+	statusCode := extractStatusCode(reflect.TypeOf(err), defaultStatus)
+	customHeaders := extractHeaders(reflect.ValueOf(err))
+	for name, value := range customHeaders {
+		w.Header().Set(name, value)
+	}
+
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+
+	w.WriteHeader(statusCode)
+	if !shouldWriteBody(req.Method, statusCode) {
+		return true
+	}
+
+	if encodeErr := json.NewEncoder(w).Encode(toJSONMap(err)); encodeErr != nil {
+		handleError(s, w, req, &Error{
+			Kind:    ErrorKindSerialization,
+			Message: "failed to encode error response",
+			Err:     encodeErr,
+		})
+	}
+
+	return true
+}
+
+func isStructLike(v reflect.Value) bool {
+	if !v.IsValid() {
+		return false
+	}
+
+	t := v.Type()
+	if t.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return false
+		}
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+
+	n := t.NumField()
+	if n == 0 {
+		return true
+	}
+
+	for i := 0; i < n; i++ {
+		field := t.Field(i)
+		if field.IsExported() {
+			return true
+		}
+		if field.Tag.Get("http") != "" || field.Tag.Get("json") != "" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // shouldWriteBody determines whether a response body is allowed for the given method/status combination.
