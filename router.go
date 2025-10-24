@@ -3,12 +3,14 @@ package sprout
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/julienschmidt/httprouter"
@@ -19,6 +21,12 @@ type Sprout struct {
 	validate *validator.Validate
 	config   *Config
 	openapi  *openAPIDocument
+	parent   *Sprout
+	order    *orderSeq
+	registry *routerRegistry
+
+	mwMu        sync.RWMutex
+	middlewares []middlewareLayer
 }
 
 // Config holds configuration options for customizing Sprout's behavior.
@@ -59,27 +67,36 @@ func NewWithConfig(config *Config) *Sprout {
 		config.StrictErrorTypes = &defaultStrict
 	}
 
+	registry := newRouterRegistry()
+
 	s := &Sprout{
 		Router:   httprouter.New(),
 		validate: validator.New(),
 		config:   config,
 		openapi:  newOpenAPIDocument(),
+		order:    &orderSeq{},
+		registry: registry,
 	}
+	registry.add(s)
 
 	// Route 404 Not Found errors through ErrorHandler for consistent error handling
 	s.Router.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleError(s, w, r, &Error{
-			Kind:    ErrorKindNotFound,
-			Message: fmt.Sprintf("route not found: %s %s", r.Method, r.URL.Path),
-		})
+		s.dispatchFallback(w, r, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleError(s, w, r, &Error{
+				Kind:    ErrorKindNotFound,
+				Message: fmt.Sprintf("route not found: %s %s", r.Method, r.URL.Path),
+			})
+		}))
 	})
 
 	// Route 405 Method Not Allowed errors through ErrorHandler for consistent error handling
 	s.Router.MethodNotAllowed = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleError(s, w, r, &Error{
-			Kind:    ErrorKindMethodNotAllowed,
-			Message: fmt.Sprintf("method not allowed: %s %s", r.Method, r.URL.Path),
-		})
+		s.dispatchFallback(w, r, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleError(s, w, r, &Error{
+				Kind:    ErrorKindMethodNotAllowed,
+				Message: fmt.Sprintf("method not allowed: %s %s", r.Method, r.URL.Path),
+			})
+		}))
 	})
 
 	// Expose generated OpenAPI specification
@@ -144,7 +161,15 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 		s.openapi.RegisterRoute(method, fullPath, typeOf[Req](), typeOf[Resp](), cfg.expectedErrors)
 	}
 
-	s.Router.Handle(method, fullPath, wrap(s, h, cfg))
+	entry := &routeEntry{
+		owner: s,
+		order: s.order.Next(),
+	}
+	entry.fn = wrap(entry, h, cfg)
+
+	s.Router.Handle(method, fullPath, func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
+		entry.owner.dispatchRoute(w, req, ps, entry)
+	})
 }
 
 // Mount creates a child router that shares the underlying router and validator.
@@ -166,12 +191,34 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 
 	childConfig.BasePath = combineBasePath(s.config.BasePath, prefix, childConfig.BasePath)
 
-	return &Sprout{
+	child := &Sprout{
 		Router:   s.Router,
 		validate: s.validate,
 		config:   &childConfig,
 		openapi:  s.openapi,
+		parent:   s,
+		order:    s.order,
+		registry: s.registry,
 	}
+	s.registry.add(child)
+
+	return child
+}
+
+// Use registers middleware that executes according to the router hierarchy.
+func (s *Sprout) Use(mw Middleware) {
+	if mw == nil {
+		return
+	}
+
+	layer := middlewareLayer{
+		order: s.order.Next(),
+		fn:    mw,
+	}
+
+	s.mwMu.Lock()
+	s.middlewares = append(s.middlewares, layer)
+	s.mwMu.Unlock()
 }
 
 // RouteOption is a function that configures a route
@@ -236,14 +283,16 @@ func setFieldValue(fieldValue reflect.Value, value string) error {
 	return nil
 }
 
-func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) httprouter.Handle {
-	return func(w http.ResponseWriter, req *http.Request, ps httprouter.Params) {
+func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *routeConfig) Middleware {
+	return func(w http.ResponseWriter, req *http.Request, next Next) {
+		s := entry.owner
 		ctx := req.Context()
 
 		// Parse request into the typed DTO
 		var reqDTO Req
 		reqValue := reflect.ValueOf(&reqDTO).Elem()
 		reqType := reqValue.Type()
+		params := Params(req)
 
 		// Iterate through struct fields and populate from different sources
 		for i := 0; i < reqType.NumField(); i++ {
@@ -256,7 +305,10 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 
 			// Handle path parameters
 			if pathTag := field.Tag.Get("path"); pathTag != "" {
-				paramValue := ps.ByName(pathTag)
+				paramValue := ""
+				if params != nil {
+					paramValue = params.ByName(pathTag)
+				}
 				if err := setFieldValue(fieldValue, paramValue); err != nil {
 					handleError(s, w, req, &Error{
 						Kind:    ErrorKindParse,
@@ -332,6 +384,11 @@ func wrap[Req, Resp any](s *Sprout, handle Handle[Req, Resp], cfg *routeConfig) 
 		// Call the handler
 		respDTO, err := handle(ctx, &reqDTO)
 		if err != nil {
+			if errors.Is(err, ErrNext) {
+				next()
+				return
+			}
+
 			// Validate error type if expected errors are configured
 			if len(cfg.expectedErrors) > 0 {
 				errType := reflect.TypeOf(err)

@@ -19,6 +19,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 - [Supported HTTP Methods](#supported-http-methods)
 - [Base Path](#base-path)
 - [Nested Routers](#nested-routers)
+- [Middleware](#middleware)
 - [Type Conversion](#type-conversion)
 - [Error Handling](#error-handling)
   - [Basic Error Responses](#basic-error-responses)
@@ -346,6 +347,71 @@ sprout.GET(apiV1, "/status", handleStatus) // -> /api/v1/status
 ```
 
 Pass a full `sprout.Config` when mounting to override behavior per router (for example a distinct error handler or `StrictErrorTypes` flag) while leaving the parent untouched.
+
+## Middleware
+
+Attach middleware to any router with `Use()`. Middleware runs in the order it is registered and respects router hierarchy—parent middleware always wraps child middleware and routes, just like Express.
+
+```go
+router := sprout.New()
+
+// Global logging middleware
+router.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
+	start := time.Now()
+	next() // continue to handlers
+	log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start))
+})
+
+api := router.Mount("/api", nil)
+
+// Scoped middleware for /api/*
+api.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
+	if r.Header.Get("Authorization") == "" {
+		http.Error(w, "missing auth", http.StatusUnauthorized)
+		return
+	}
+	next()
+})
+
+sprout.GET(api, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+	// req already includes :id thanks to struct tags.
+	// Middleware can still inspect the raw params via sprout.Params(r).
+	return findUser(req.UserID), nil
+})
+```
+
+### Falling Through with `ErrNext`
+
+Typed handlers can opt to let downstream middleware handle a response by returning `sprout.ErrNext`. Middleware registered after the route will observe the fallthrough:
+
+```go
+sprout.GET(router, "/dashboard", func(ctx context.Context, req *EmptyRequest) (*DashboardResponse, error) {
+	if isDeprecatedUser(ctx) {
+		return nil, sprout.ErrNext // skip to the next middleware
+	}
+	return &DashboardResponse{Message: "Welcome back!"}, nil
+})
+
+router.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
+	// Runs when the handler called ErrNext or another middleware called next()
+	http.Redirect(w, r, "/upgrade", http.StatusFound)
+})
+```
+
+### Accessing Route Parameters in Middleware
+
+Middleware receives the raw `*http.Request`. Use `sprout.Params(r)` to read `httprouter.Params` captured for the route, even in fallback middleware for `404`/`405` responses:
+
+```go
+router.Use(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
+	if params := sprout.Params(r); params != nil {
+		log.Printf("matched route params: %#v", params)
+	}
+	next()
+})
+```
+
+> **Order matters:** Middleware registered before a route runs first. Middleware registered after a route only executes if the route (or earlier middleware) calls `next()` or returns `sprout.ErrNext`. Middleware defined on parent routers wraps middleware/routes defined on child routers, so global behaviour is applied automatically.
 
 ## OpenAPI & Swagger
 
