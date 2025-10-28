@@ -162,8 +162,9 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	}
 
 	entry := &routeEntry{
-		owner: s,
-		order: s.order.Next(),
+		owner:           s,
+		order:           s.order.Next(),
+		routeMiddleware: cfg.middlewares,
 	}
 	entry.fn = wrap(entry, h, cfg)
 
@@ -227,6 +228,7 @@ type RouteOption func(*routeConfig)
 // routeConfig holds configuration for a route
 type routeConfig struct {
 	expectedErrors []reflect.Type
+	middlewares    []Middleware
 }
 
 // WithErrors registers expected error types for validation and documentation
@@ -239,6 +241,18 @@ func WithErrors(errs ...error) RouteOption {
 				errType = errType.Elem()
 			}
 			cfg.expectedErrors = append(cfg.expectedErrors, errType)
+		}
+	}
+}
+
+// WithMiddleware attaches middleware that only runs for the specific route.
+func WithMiddleware(mw ...Middleware) RouteOption {
+	return func(cfg *routeConfig) {
+		for _, fn := range mw {
+			if fn == nil {
+				continue
+			}
+			cfg.middlewares = append(cfg.middlewares, fn)
 		}
 	}
 }

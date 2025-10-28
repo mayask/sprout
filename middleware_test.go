@@ -37,6 +37,52 @@ func TestMiddlewareOrderBeforeRoute(t *testing.T) {
 	}
 }
 
+func TestRouteOptionMiddleware(t *testing.T) {
+	router := New()
+	var events []string
+
+	router.Use(func(w http.ResponseWriter, r *http.Request, next Next) {
+		events = append(events, "global-before")
+		next(nil)
+	})
+
+	GET(router, "/hit", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		events = append(events, "route")
+		return &HelloResponse{Message: "ok"}, nil
+	}, WithMiddleware(
+		func(w http.ResponseWriter, r *http.Request, next Next) {
+			events = append(events, "route-mw-1-before")
+			next(nil)
+			events = append(events, "route-mw-1-after")
+		},
+		func(w http.ResponseWriter, r *http.Request, next Next) {
+			events = append(events, "route-mw-2-before")
+			next(nil)
+			events = append(events, "route-mw-2-after")
+		},
+	))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/hit", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	want := []string{
+		"global-before",
+		"route-mw-1-before",
+		"route-mw-2-before",
+		"route",
+		"route-mw-2-after",
+		"route-mw-1-after",
+	}
+
+	if diff := cmpStringSlices(events, want); diff != "" {
+		t.Fatalf("unexpected event order: %s", diff)
+	}
+}
+
 func TestMiddlewareAfterRouteWithoutNext(t *testing.T) {
 	router := New()
 	var events []string

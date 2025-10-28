@@ -383,6 +383,17 @@ sprout.GET(api, "/users/:id", func(ctx context.Context, req *GetUserRequest) (*G
 	// Middleware can still inspect the raw params via sprout.Params(r).
 	return findUser(req.UserID), nil
 })
+
+// Route-level middleware using RouteOption
+sprout.GET(api, "/reports", func(ctx context.Context, req *ReportRequest) (*ReportResponse, error) {
+	return generateReport(req)
+}, sprout.WithMiddleware(func(w http.ResponseWriter, r *http.Request, next sprout.Next) {
+	if !hasReportAccess(r.Context()) {
+		next(&AuthError{Message: "forbidden"})
+		return
+	}
+	next(nil)
+}))
 ```
 
 ### Falling Through with `ErrNext`

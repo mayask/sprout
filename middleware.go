@@ -32,9 +32,10 @@ type middlewareLayer struct {
 // routeEntry wraps a typed handler with its parent router metadata and the
 // order at which it was registered.
 type routeEntry struct {
-	owner *Sprout
-	order int64
-	fn    Middleware
+	owner           *Sprout
+	order           int64
+	fn              Middleware
+	routeMiddleware []Middleware
 }
 
 // orderSeq provides a monotonic counter shared by routers so we can determine
@@ -92,8 +93,11 @@ func (s *Sprout) dispatchRoute(w http.ResponseWriter, req *http.Request, ps http
 
 	before, after := gatherRouteMiddleware(entry)
 
-	chain := make([]Middleware, 0, len(before)+1+len(after))
+	chain := make([]Middleware, 0, len(before)+len(entry.routeMiddleware)+1+len(after))
 	chain = append(chain, before...)
+	if len(entry.routeMiddleware) > 0 {
+		chain = append(chain, entry.routeMiddleware...)
+	}
 	chain = append(chain, entry.fn)
 	chain = append(chain, after...)
 
