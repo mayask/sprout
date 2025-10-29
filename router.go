@@ -403,37 +403,44 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 				return
 			}
 
-			// Validate error type if expected errors are configured
-			if len(cfg.expectedErrors) > 0 {
-				errType := reflect.TypeOf(err)
-				if errType.Kind() == reflect.Ptr {
-					errType = errType.Elem()
-				}
+			errType := reflect.TypeOf(err)
+			if errType.Kind() == reflect.Ptr {
+				errType = errType.Elem()
+			}
 
-				found := false
-				for _, expected := range cfg.expectedErrors {
-					if errType == expected {
-						found = true
-						break
-					}
-				}
-
-				if !found {
-					// StrictErrorTypes is enabled by default
-					if *s.config.StrictErrorTypes {
-						handleError(s, w, req, &Error{
-							Kind:    ErrorKindUndeclaredError,
-							Message: fmt.Sprintf("handler returned undeclared error type: %T", err),
-							Err:     err,
-						})
-						return
-					}
+			declared := false
+			for _, expected := range cfg.expectedErrors {
+				if errType == expected {
+					declared = true
+					break
 				}
 			}
-			if writeTypedErrorResponse(s, w, req, err, http.StatusInternalServerError) {
+
+			if declared {
+				enforceValidation := true
+				if s.config.StrictErrorTypes != nil && !*s.config.StrictErrorTypes {
+					enforceValidation = false
+				}
+
+				if handled, fallbackErr := writeTypedErrorResponse(s, w, req, err, http.StatusInternalServerError, enforceValidation); handled {
+					if fallbackErr != nil {
+						handleError(s, w, req, fallbackErr)
+					}
+					return
+				} else if fallbackErr != nil {
+					handleError(s, w, req, fallbackErr)
+					return
+				}
+			}
+
+			if *s.config.StrictErrorTypes {
+				handleError(s, w, req, &Error{
+					Kind:    ErrorKindUndeclaredError,
+					Message: fmt.Sprintf("handler returned undeclared error type: %T", err),
+					Err:     err,
+				})
 				return
 			}
-
 			handleError(s, w, req, err)
 			return
 		}
@@ -525,23 +532,29 @@ func DELETE[Req, Resp any](s *Sprout, path string, h Handle[Req, Resp], opts ...
 	handle(s, http.MethodDelete, path, h, opts...)
 }
 
-func writeTypedErrorResponse(s *Sprout, w http.ResponseWriter, req *http.Request, err error, defaultStatus int) bool {
+func writeTypedErrorResponse(s *Sprout, w http.ResponseWriter, req *http.Request, err error, defaultStatus int, enforceValidation bool) (bool, error) {
 	if err == nil {
-		return false
+		return false, nil
+	}
+
+	var sproutErr *Error
+	if errors.As(err, &sproutErr) {
+		return false, nil
 	}
 
 	errValue := reflect.ValueOf(err)
 	if !isStructLike(errValue) {
-		return false
+		return false, nil
 	}
 
-	if validationErr := s.validate.Struct(err); validationErr != nil {
-		handleError(s, w, req, &Error{
-			Kind:    ErrorKindErrorValidation,
-			Message: "error response validation failed",
-			Err:     validationErr,
-		})
-		return true
+	if enforceValidation {
+		if validationErr := s.validate.Struct(err); validationErr != nil {
+			return false, &Error{
+				Kind:    ErrorKindErrorValidation,
+				Message: "error response validation failed",
+				Err:     validationErr,
+			}
+		}
 	}
 
 	statusCode := extractStatusCode(reflect.TypeOf(err), defaultStatus)
@@ -556,18 +569,18 @@ func writeTypedErrorResponse(s *Sprout, w http.ResponseWriter, req *http.Request
 
 	w.WriteHeader(statusCode)
 	if !shouldWriteBody(req.Method, statusCode) {
-		return true
+		return true, nil
 	}
 
 	if encodeErr := json.NewEncoder(w).Encode(toJSONMap(err)); encodeErr != nil {
-		handleError(s, w, req, &Error{
+		return false, &Error{
 			Kind:    ErrorKindSerialization,
 			Message: "failed to encode error response",
 			Err:     encodeErr,
-		})
+		}
 	}
 
-	return true
+	return true, nil
 }
 
 func isStructLike(v reflect.Value) bool {

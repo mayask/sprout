@@ -196,10 +196,6 @@ func (s *Sprout) handleChainError(w http.ResponseWriter, req *http.Request, err 
 		return
 	}
 
-	if writeTypedErrorResponse(s, w, req, err, http.StatusInternalServerError) {
-		return
-	}
-
 	handleError(s, w, req, err)
 }
 

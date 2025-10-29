@@ -396,6 +396,208 @@ func TestSproutHTTPError(t *testing.T) {
 	})
 }
 
+func TestGlobalErrorHandlerReceivesUndeclaredError(t *testing.T) {
+	var called bool
+
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			t.Helper()
+			var sproutErr *Error
+			if !errors.As(err, &sproutErr) {
+				t.Fatalf("expected error to be *sprout.Error, got %T", err)
+			}
+			if sproutErr.Kind != ErrorKindUndeclaredError {
+				t.Fatalf("expected ErrorKindUndeclaredError, got %s", sproutErr.Kind)
+			}
+			called = true
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("handled"))
+		},
+	})
+
+	GET(router, "/boom", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, &TeapotError{Msg: "boom"}
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/boom", nil))
+
+	if !called {
+		t.Fatalf("expected global error handler to be called for undeclared error but it was not")
+	}
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 from custom handler, got %d", recorder.Code)
+	}
+
+	if body := recorder.Body.String(); body != "handled" {
+		t.Fatalf("expected body 'handled', got %q", body)
+	}
+}
+
+func TestGlobalErrorHandlerOverridesResponse(t *testing.T) {
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			t.Helper()
+			var sproutErr *Error
+			if !errors.As(err, &sproutErr) {
+				t.Fatalf("expected error to be *sprout.Error, got %T", err)
+			}
+			if sproutErr.Kind != ErrorKindUndeclaredError {
+				t.Fatalf("expected ErrorKindUndeclaredError, got %s", sproutErr.Kind)
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("custom override"))
+		},
+	})
+
+	GET(router, "/override", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, &TeapotError{Msg: "boom"}
+	}, WithErrors(NotFoundError{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/override", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected overridden status 500, got %d", recorder.Code)
+	}
+
+	if body := recorder.Body.String(); body != "custom override" {
+		t.Fatalf("expected overridden body 'custom override', got %q", body)
+	}
+
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "text/plain" {
+		t.Fatalf("expected overridden Content-Type 'text/plain', got %q", contentType)
+	}
+}
+
+func TestGlobalErrorHandlerNonStrictReceivesOriginalError(t *testing.T) {
+	strict := false
+	var received error
+
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			received = err
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+		StrictErrorTypes: &strict,
+	})
+
+	GET(router, "/boom", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, &TeapotError{Msg: "boom"}
+	}, WithErrors(NotFoundError{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/boom", nil))
+
+	if received == nil {
+		t.Fatalf("expected global error handler to receive error")
+	}
+
+	var teapot *TeapotError
+	if !errors.As(received, &teapot) {
+		t.Fatalf("expected original TeapotError in non-strict mode, got %T", received)
+	}
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 from custom handler, got %d", recorder.Code)
+	}
+}
+
+func TestDeclaredErrorSkipsErrorHandler(t *testing.T) {
+	var called bool
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			called = true
+		},
+	})
+
+	GET(router, "/declared", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, NotFoundError{
+			Resource: "user",
+			Message:  "user not found",
+		}
+	}, WithErrors(NotFoundError{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/declared", nil))
+
+	if called {
+		t.Fatalf("expected declared typed error to skip error handler")
+	}
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", recorder.Code)
+	}
+}
+
+func TestDeclaredInvalidErrorNonStrictSkipsErrorHandler(t *testing.T) {
+	strict := false
+	var called bool
+
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			called = true
+		},
+		StrictErrorTypes: &strict,
+	})
+
+	GET(router, "/invalid-declared", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, NotFoundError{
+			Resource: "user",
+			Message:  "", // invalid per validation rules
+		}
+	}, WithErrors(NotFoundError{}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/invalid-declared", nil))
+
+	if called {
+		t.Fatalf("expected non-strict declared error to skip error handler despite validation failure")
+	}
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", recorder.Code)
+	}
+}
+
+func TestUndeclaredInvalidErrorNonStrictHitsHandlerWithOriginalError(t *testing.T) {
+	strict := false
+	var captured error
+
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			captured = err
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+		StrictErrorTypes: &strict,
+	})
+
+	GET(router, "/undeclared-invalid", func(ctx context.Context, req *EmptyRequest) (*HelloResponse, error) {
+		return nil, NotFoundError{
+			Resource: "user",
+			Message:  "", // invalid
+		}
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/undeclared-invalid", nil))
+
+	if captured == nil {
+		t.Fatalf("expected error handler to capture original error")
+	}
+
+	var notFound NotFoundError
+	if !errors.As(captured, &notFound) {
+		t.Fatalf("expected error handler to receive NotFoundError, got %T", captured)
+	}
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 from handler, got %d", recorder.Code)
+	}
+}
+
 func TestSproutWithoutErrorHints(t *testing.T) {
 	router := New()
 

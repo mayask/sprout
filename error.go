@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 )
 
 // ErrorKind represents the category of error that occurred during request processing.
@@ -66,14 +67,26 @@ func (e *Error) Unwrap() error {
 
 // handleError routes errors to either the custom error handler or the default handler.
 func handleError(s *Sprout, w http.ResponseWriter, r *http.Request, err error) {
-	if s.config.ErrorHandler != nil {
-		s.config.ErrorHandler(w, r, err)
+	if err == nil {
 		return
 	}
 
-	// Default error handling: plain text response with appropriate status code
+	normalizedErr := normalizeError(s, err)
+
+	if s.config.ErrorHandler != nil {
+		s.config.ErrorHandler(w, r, normalizedErr)
+		return
+	}
+
+	if handled, fallbackErr := writeTypedErrorResponse(s, w, r, normalizedErr, http.StatusInternalServerError, true); handled {
+		return
+	} else if fallbackErr != nil {
+		handleError(s, w, r, fallbackErr)
+		return
+	}
+
 	var sproutErr *Error
-	if errors.As(err, &sproutErr) {
+	if errors.As(normalizedErr, &sproutErr) {
 		switch sproutErr.Kind {
 		case ErrorKindParse, ErrorKindValidation:
 			http.Error(w, sproutErr.Error(), http.StatusBadRequest)
@@ -90,5 +103,31 @@ func handleError(s *Sprout, w http.ResponseWriter, r *http.Request, err error) {
 	}
 
 	// Fallback for non-Sprout errors (shouldn't normally happen)
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Error(w, normalizedErr.Error(), http.StatusInternalServerError)
+}
+
+func normalizeError(s *Sprout, err error) error {
+	if s == nil || s.validate == nil {
+		return err
+	}
+
+	var sproutErr *Error
+	if errors.As(err, &sproutErr) {
+		return err
+	}
+
+	if isStructLike(reflect.ValueOf(err)) {
+		if s.config.StrictErrorTypes != nil && !*s.config.StrictErrorTypes {
+			return err
+		}
+		if validationErr := s.validate.Struct(err); validationErr != nil {
+			return &Error{
+				Kind:    ErrorKindErrorValidation,
+				Message: "error response validation failed",
+				Err:     validationErr,
+			}
+		}
+	}
+
+	return err
 }
