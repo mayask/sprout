@@ -643,6 +643,19 @@ HTTP/1.1 401 Unauthorized
 {"message": "not authorized"}
 ```
 
+#### Runtime Behavior Summary
+
+| Scenario | `StrictErrorTypes = true` (default) | `StrictErrorTypes = false` |
+| --- | --- | --- |
+| Declared error passes validation | Serialized directly from the error struct, `ErrorHandler` not invoked | Same as strict |
+| Declared error fails validation | Wrapped into `*sprout.Error` with `ErrorKindErrorValidation` and routed through `ErrorHandler` | Validation is skipped, the original error struct is serialized, `ErrorHandler` not invoked |
+| Undeclared error returned | Wrapped into `*sprout.Error` with `ErrorKindUndeclaredError` and routed through `ErrorHandler` | Original error is passed to `ErrorHandler` unchanged (if configured); default handler still emits a 500 |
+
+**Notes**
+
+- Once a custom `ErrorHandler` is invoked, Sprout does not modify the HTTP response—your handler must write status, headers, and body.
+- Typed error serialization happens before the `ErrorHandler` is called; only when serialization fails or strict-mode rules apply will Sprout call your handler.
+
 #### Handling Undeclared Errors with Custom Error Handler
 
 When using a custom error handler, you can detect and handle undeclared error types:
