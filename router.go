@@ -49,7 +49,12 @@ type Config struct {
 	// For example, with BasePath="/api/v1", a route registered as "/users" becomes "/api/v1/users".
 	// Leading and trailing slashes are handled automatically.
 	BasePath string
+
+	openapiInfo *OpenAPIInfo
 }
+
+// Option mutates router configuration before the Sprout instance is constructed.
+type Option func(*Config)
 
 // New creates a new Sprout router with default configuration
 func New() *Sprout {
@@ -57,10 +62,17 @@ func New() *Sprout {
 }
 
 // NewWithConfig creates a new Sprout router with custom configuration
-func NewWithConfig(config *Config) *Sprout {
+func NewWithConfig(config *Config, opts ...Option) *Sprout {
 	if config == nil {
 		config = &Config{}
 	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(config)
+		}
+	}
+
 	// Default to strict error type checking
 	if config.StrictErrorTypes == nil {
 		defaultStrict := true
@@ -73,7 +85,7 @@ func NewWithConfig(config *Config) *Sprout {
 		Router:   httprouter.New(),
 		validate: validator.New(),
 		config:   config,
-		openapi:  newOpenAPIDocument(),
+		openapi:  newOpenAPIDocument(config.openapiInfo),
 		order:    &orderSeq{},
 		registry: registry,
 	}
@@ -188,6 +200,10 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 	if childConfig.StrictErrorTypes == nil {
 		strict := *s.config.StrictErrorTypes
 		childConfig.StrictErrorTypes = &strict
+	}
+
+	if childConfig.openapiInfo == nil {
+		childConfig.openapiInfo = s.config.openapiInfo
 	}
 
 	childConfig.BasePath = combineBasePath(s.config.BasePath, prefix, childConfig.BasePath)

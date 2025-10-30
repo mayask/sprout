@@ -449,6 +449,33 @@ if data, err := router.OpenAPIJSON(); err == nil {
 
 Schemas are derived from your request/response DTOs, path/query/header tags become parameters, and `WithErrors` contributes typed error responses—keeping the documentation aligned with the handlers.
 
+### Customizing Metadata
+
+Top-level OpenAPI metadata (title, version, contact details, etc.) is configured via router options:
+
+```go
+router := sprout.NewWithConfig(nil, sprout.WithOpenAPIInfo(sprout.OpenAPIInfo{
+    Title:       "Payments API",
+    Version:     "2025.04",
+    Description: "Internal payments platform",
+    Terms:       "https://example.com/terms",
+    Contact: &sprout.OpenAPIContact{
+        Name:  "API Support",
+        Email: "support@example.com",
+    },
+    License: &sprout.OpenAPILicense{
+        Name: "Apache-2.0",
+        URL:  "https://www.apache.org/licenses/LICENSE-2.0",
+    },
+    Servers: []sprout.OpenAPIServer{
+        {URL: "https://api.example.com", Description: "production"},
+        {URL: "http://localhost:8080", Description: "local"},
+    },
+}))
+```
+
+The same metadata is available from the `/swagger` endpoint and through `OpenAPIJSON()` / `OpenAPIYAML()`.
+
 ### Sample Server
 
 A runnable example lives in `cmd/demo/main.go`. Start it with:

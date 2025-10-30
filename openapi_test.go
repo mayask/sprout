@@ -179,6 +179,84 @@ func TestOpenAPIRequestBodyAndErrors(t *testing.T) {
 	}
 }
 
+func TestOpenAPIInfoOption(t *testing.T) {
+	info := OpenAPIInfo{
+		Title:       "Payments API",
+		Version:     "2025.04",
+		Description: "Internal payments gateway",
+		Terms:       "https://example.com/terms",
+		Contact: &OpenAPIContact{
+			Name:  "API Support",
+			Email: "support@example.com",
+			URL:   "https://example.com/support",
+		},
+		License: &OpenAPILicense{
+			Name: "Apache-2.0",
+			URL:  "https://www.apache.org/licenses/LICENSE-2.0",
+		},
+		Servers: []OpenAPIServer{
+			{URL: "https://api.example.com", Description: "production"},
+			{URL: "http://localhost:8080", Description: "local development"},
+		},
+	}
+
+	router := NewWithConfig(nil, WithOpenAPIInfo(info))
+
+	spec, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(spec)
+	if err != nil {
+		t.Fatalf("failed to parse openapi json: %v", err)
+	}
+
+	if doc.Info == nil {
+		t.Fatalf("expected info section to be present")
+	}
+
+	if doc.Info.Title != info.Title {
+		t.Fatalf("expected title %q, got %q", info.Title, doc.Info.Title)
+	}
+	if doc.Info.Version != info.Version {
+		t.Fatalf("expected version %q, got %q", info.Version, doc.Info.Version)
+	}
+	if doc.Info.Description != info.Description {
+		t.Fatalf("expected description %q, got %q", info.Description, doc.Info.Description)
+	}
+	if doc.Info.TermsOfService != info.Terms {
+		t.Fatalf("expected terms %q, got %q", info.Terms, doc.Info.TermsOfService)
+	}
+
+	if info.Contact == nil {
+		t.Fatalf("test misconfigured: contact must be provided")
+	}
+	if doc.Info.Contact == nil || doc.Info.Contact.Name != info.Contact.Name || doc.Info.Contact.Email != info.Contact.Email || doc.Info.Contact.URL != info.Contact.URL {
+		t.Fatalf("expected contact %+v, got %+v", info.Contact, doc.Info.Contact)
+	}
+
+	if info.License == nil {
+		t.Fatalf("test misconfigured: license must be provided")
+	}
+	if doc.Info.License == nil || doc.Info.License.Name != info.License.Name || doc.Info.License.URL != info.License.URL {
+		t.Fatalf("expected license %+v, got %+v", info.License, doc.Info.License)
+	}
+
+	if len(doc.Servers) != len(info.Servers) {
+		t.Fatalf("expected %d servers, got %d", len(info.Servers), len(doc.Servers))
+	}
+	for i, server := range info.Servers {
+		if doc.Servers[i] == nil {
+			t.Fatalf("expected server entry at index %d", i)
+		}
+		if doc.Servers[i].URL != server.URL || doc.Servers[i].Description != server.Description {
+			t.Fatalf("expected server %+v, got %+v", server, doc.Servers[i])
+		}
+	}
+}
+
 func pathKeys(paths *openapi3.Paths) []string {
 	if paths == nil {
 		return nil

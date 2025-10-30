@@ -29,18 +29,111 @@ type openAPIDocument struct {
 	typeNames map[reflect.Type]string
 }
 
-func newOpenAPIDocument() *openAPIDocument {
+// OpenAPIInfo configures high-level OpenAPI document metadata.
+type OpenAPIInfo struct {
+	Title       string
+	Version     string
+	Description string
+	Terms       string
+	Contact     *OpenAPIContact
+	License     *OpenAPILicense
+	Servers     []OpenAPIServer
+}
+
+// OpenAPIContact describes the API contact information.
+type OpenAPIContact struct {
+	Name  string
+	URL   string
+	Email string
+}
+
+// OpenAPILicense describes the API license information.
+type OpenAPILicense struct {
+	Name string
+	URL  string
+}
+
+// OpenAPIServer represents a server entry in the OpenAPI document.
+type OpenAPIServer struct {
+	URL         string
+	Description string
+}
+
+// WithOpenAPIInfo configures the router's OpenAPI metadata.
+func WithOpenAPIInfo(info OpenAPIInfo) Option {
+	return func(cfg *Config) {
+		cfg.openapiInfo = cloneOpenAPIInfo(info)
+	}
+}
+
+func cloneOpenAPIInfo(info OpenAPIInfo) *OpenAPIInfo {
+	clone := info
+	if info.Contact != nil {
+		contactCopy := *info.Contact
+		clone.Contact = &contactCopy
+	}
+	if info.License != nil {
+		licenseCopy := *info.License
+		clone.License = &licenseCopy
+	}
+	if len(info.Servers) > 0 {
+		clone.Servers = append([]OpenAPIServer(nil), info.Servers...)
+	}
+	return &clone
+}
+
+func newOpenAPIDocument(info *OpenAPIInfo) *openAPIDocument {
 	components := openapi3.NewComponents()
 	components.Schemas = openapi3.Schemas{}
 
+	docInfo := &openapi3.Info{
+		Title:   "Sprout API",
+		Version: "1.0.0",
+	}
+
+	if info != nil {
+		if info.Title != "" {
+			docInfo.Title = info.Title
+		}
+		if info.Version != "" {
+			docInfo.Version = info.Version
+		}
+		if info.Description != "" {
+			docInfo.Description = info.Description
+		}
+		if info.Terms != "" {
+			docInfo.TermsOfService = info.Terms
+		}
+		if info.Contact != nil {
+			docInfo.Contact = &openapi3.Contact{
+				Name:  info.Contact.Name,
+				URL:   info.Contact.URL,
+				Email: info.Contact.Email,
+			}
+		}
+		if info.License != nil {
+			docInfo.License = &openapi3.License{
+				Name: info.License.Name,
+				URL:  info.License.URL,
+			}
+		}
+	}
+
 	doc := &openapi3.T{
-		OpenAPI: "3.0.3",
-		Info: &openapi3.Info{
-			Title:   "Sprout API",
-			Version: "1.0.0",
-		},
+		OpenAPI:    "3.0.3",
+		Info:       docInfo,
 		Paths:      openapi3.NewPaths(),
 		Components: &components,
+	}
+
+	if info != nil && len(info.Servers) > 0 {
+		doc.Servers = make(openapi3.Servers, len(info.Servers))
+		for i, server := range info.Servers {
+			doc.Servers[i] = &openapi3.Server{
+				URL:         server.URL,
+				Description: server.Description,
+			}
+		}
 	}
 
 	return &openAPIDocument{

@@ -48,7 +48,18 @@ type getUserResponse struct {
 type pingRequest struct{}
 
 func main() {
-	router := sprout.New()
+	router := sprout.NewWithConfig(nil, sprout.WithOpenAPIInfo(sprout.OpenAPIInfo{
+		Title:       "Sprout Demo API",
+		Version:     "2025.01",
+		Description: "Sample API demonstrating Sprout routing and OpenAPI generation",
+		Servers: []sprout.OpenAPIServer{
+			{URL: "http://localhost:8080", Description: "local dev"},
+		},
+		Contact: &sprout.OpenAPIContact{
+			Name:  "Sprout Maintainers",
+			Email: "support@example.com",
+		},
+	}))
 
 	sprout.GET(router, "/ping", func(ctx context.Context, _ *pingRequest) (*pingResponse, error) {
 		return &pingResponse{Message: "pong"}, nil
