@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -104,6 +105,73 @@ func TestSproutWithValidation(t *testing.T) {
 
 	if resp.ID != 1 || resp.Name != "John Doe" || resp.Email != "john@example.com" {
 		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+type ListUsersResponse struct {
+	ID    int    `json:"id" validate:"required"`
+	Email string `json:"email" validate:"required,email"`
+}
+
+type ListUsersEnvelope struct {
+	Users []ListUsersResponse `json:"users" sprout:"unwrap" validate:"required,dive"`
+}
+
+func TestSproutSliceResponse(t *testing.T) {
+	router := New()
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*ListUsersEnvelope, error) {
+		return &ListUsersEnvelope{
+			Users: []ListUsersResponse{
+				{ID: 1, Email: "alice@example.com"},
+				{ID: 2, Email: "bob@example.com"},
+			},
+		}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/users", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var resp []ListUsersResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp) != 2 {
+		t.Fatalf("expected two users, got %d", len(resp))
+	}
+	if resp[0].ID != 1 || resp[0].Email != "alice@example.com" {
+		t.Errorf("unexpected first user: %+v", resp[0])
+	}
+	if resp[1].ID != 2 || resp[1].Email != "bob@example.com" {
+		t.Errorf("unexpected second user: %+v", resp[1])
+	}
+}
+
+func TestSproutSliceResponseValidationFailure(t *testing.T) {
+	router := New()
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*ListUsersEnvelope, error) {
+		envelope := &ListUsersEnvelope{
+			Users: []ListUsersResponse{
+				{ID: 1, Email: "invalid-email"},
+				{ID: 2, Email: "bob@example.com"},
+			},
+		}
+		return envelope, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("GET", "/users", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status InternalServerError, got %d", recorder.Code)
+	}
+
+	if !strings.Contains(recorder.Body.String(), "response validation failed") {
+		t.Fatalf("expected response validation error message, got %q", recorder.Body.String())
 	}
 }
 

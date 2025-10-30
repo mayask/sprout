@@ -894,6 +894,34 @@ func (e RateLimitError) Error() string { return e.Message }
 
 **Auto-exclusion from JSON**: Fields with `path`, `query`, `header`, or `http` tags are automatically excluded from JSON serialization. You don't need to add `json:"-"` manually!
 
+### Unwrapping Response Payloads
+
+You can keep a struct response (for validation, headers, or status tags) and still emit a raw payload by marking exactly one field with `sprout:"unwrap"`:
+
+```go
+// UserResponse is the existing single-user DTO reused across the API.
+type ListUsersResponse struct {
+    Users []UserResponse `json:"users" sprout:"unwrap" validate:"required,dive"`
+}
+
+sprout.GET(router, "/users", func(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
+    return &ListUsersResponse{
+        Users: []UserResponse{
+            {ID: "1", Name: "Alice", Email: "alice@example.com"},
+            {ID: "2", Name: "Bob", Email: "bob@example.com"},
+        },
+    }, nil
+})
+```
+
+The HTTP body produced by this handler is a bare JSON array (`[{ "id": "1", "name": "Alice", ... }, ...]`). The wrapper struct still participates in validation, can specify headers or status codes, and the generated OpenAPI schema reflects the unwrapped type.
+
+Guidelines for `sprout:"unwrap"`:
+
+- Only one exported field per response struct may declare `sprout:"unwrap"`.
+- The tag is ignored on request DTOs; it's for responses only.
+- Other fields in the struct continue to serialize normally (or are excluded if they carry routing/header tags).
+
 ### Empty Responses
 
 For endpoints that don't need to return data (like DELETE operations), you can define empty response types and return `nil`:

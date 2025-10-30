@@ -500,8 +500,8 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		if !shouldWriteBody(req.Method, statusCode) {
 			return
 		}
-		// Convert to map to exclude routing/metadata fields from JSON
-		if encodeErr := json.NewEncoder(w).Encode(toJSONMap(respDTO)); encodeErr != nil {
+		payload := prepareResponseBody(respDTO)
+		if encodeErr := json.NewEncoder(w).Encode(payload); encodeErr != nil {
 			// Note: headers already written, so handleError can't change the status code
 			handleError(s, w, req, &Error{
 				Kind:    ErrorKindSerialization,
@@ -650,4 +650,17 @@ func shouldWriteBody(method string, status int) bool {
 	}
 
 	return true
+}
+
+func prepareResponseBody(resp any) any {
+	if resp == nil {
+		return nil
+	}
+	if unwrapped, ok := unwrapJSONFieldValue(reflect.ValueOf(resp)); ok {
+		return unwrapped
+	}
+	if isStructLike(reflect.ValueOf(resp)) {
+		return toJSONMap(resp)
+	}
+	return resp
 }

@@ -248,8 +248,11 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 			if shouldExcludeFromJSON(field) {
 				continue
 			}
-			_, omitEmpty := parseJSONName(field)
-			if hasRequiredValidation(field.Tag.Get("validate")) && !omitEmpty {
+			tagInfo := parseJSONTag(field)
+			if tagInfo.Name == "" || isUnwrapField(field) {
+				continue
+			}
+			if hasRequiredValidation(field.Tag.Get("validate")) && !tagInfo.OmitEmpty {
 				bodyRequired = true
 			}
 			hasBody = true
@@ -325,6 +328,10 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 
 	switch t.Kind() {
 	case reflect.Struct:
+		if unwrapType, ok := unwrapJSONFieldType(t); ok {
+			return d.schemaRefLocked(unwrapType)
+		}
+
 		if ref, ok := d.typeNames[t]; ok {
 			return openapi3.NewSchemaRef("#/components/schemas/"+ref, nil)
 		}
@@ -343,13 +350,13 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 			if shouldExcludeFromJSON(field) {
 				continue
 			}
-			jsonName, omitEmpty := parseJSONName(field)
-			if jsonName == "" {
+			tagInfo := parseJSONTag(field)
+			if tagInfo.Name == "" || isUnwrapField(field) {
 				continue
 			}
-			schema.Properties[jsonName] = d.inlineSchemaRefLocked(field.Type)
-			if hasRequiredValidation(field.Tag.Get("validate")) && !omitEmpty {
-				schema.Required = append(schema.Required, jsonName)
+			schema.Properties[tagInfo.Name] = d.inlineSchemaRefLocked(field.Type)
+			if hasRequiredValidation(field.Tag.Get("validate")) && !tagInfo.OmitEmpty {
+				schema.Required = append(schema.Required, tagInfo.Name)
 			}
 		}
 
@@ -475,25 +482,6 @@ func exportedFields(t reflect.Type) []reflect.StructField {
 		fields = append(fields, field)
 	}
 	return fields
-}
-
-func parseJSONName(field reflect.StructField) (name string, omitEmpty bool) {
-	jsonTag := field.Tag.Get("json")
-	if jsonTag == "-" {
-		return "", false
-	}
-	if jsonTag == "" {
-		return field.Name, false
-	}
-	parts := strings.Split(jsonTag, ",")
-	name = parts[0]
-	if name == "" {
-		name = field.Name
-	}
-	if len(parts) > 1 && parts[1] == "omitempty" {
-		omitEmpty = true
-	}
-	return name, omitEmpty
 }
 
 func hasRequiredValidation(tag string) bool {

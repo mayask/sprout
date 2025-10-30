@@ -16,6 +16,15 @@ type conflictError struct {
 	Message string   `json:"message" validate:"required"`
 }
 
+type openAPIUser struct {
+	ID   int    `json:"id" validate:"required"`
+	Name string `json:"name" validate:"required"`
+}
+
+type openAPIEnvelope struct {
+	Users []openAPIUser `json:"users" sprout:"unwrap" validate:"required,dive"`
+}
+
 func (e *conflictError) Error() string {
 	return e.Message
 }
@@ -176,6 +185,66 @@ func TestOpenAPIRequestBodyAndErrors(t *testing.T) {
 
 	if _, ok := doc.Components.Schemas["sprout_conflictError"]; !ok {
 		t.Fatalf("expected conflict error schema registered in components")
+	}
+}
+
+func TestOpenAPIUnwrappedResponse(t *testing.T) {
+	router := New()
+
+	GET(router, "/users", func(ctx context.Context, req *EmptyRequest) (*openAPIEnvelope, error) {
+		return &openAPIEnvelope{
+			Users: []openAPIUser{
+				{ID: 1, Name: "Alice"},
+				{ID: 2, Name: "Bob"},
+			},
+		}, nil
+	})
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(specBytes)
+	if err != nil {
+		t.Fatalf("failed to parse openapi json: %v", err)
+	}
+
+	pathItem := doc.Paths.Value("/users")
+	if pathItem == nil {
+		t.Fatalf("expected /users path in document")
+	}
+
+	op := pathItem.Get
+	if op == nil {
+		t.Fatalf("expected GET operation for /users")
+	}
+
+	resp := op.Responses.Value("200")
+	if resp == nil || resp.Value == nil {
+		t.Fatalf("expected 200 response in spec")
+	}
+
+	media := resp.Value.Content["application/json"]
+	if media == nil || media.Schema == nil {
+		t.Fatalf("expected application/json schema")
+	}
+
+	if media.Schema.Value == nil || !media.Schema.Value.Type.Is("array") {
+		t.Fatalf("expected unwrapped response schema to be array, got %+v", media.Schema.Value)
+	}
+
+	if media.Schema.Value.Items == nil {
+		t.Fatalf("expected array items schema")
+	}
+
+	if media.Schema.Value.Items.Ref != "#/components/schemas/sprout_openAPIUser" {
+		t.Fatalf("expected items schema to reference sprout_openAPIUser, got %s", media.Schema.Value.Items.Ref)
+	}
+
+	if _, exists := doc.Components.Schemas["sprout_openAPIEnvelope"]; exists {
+		t.Fatalf("did not expect envelope schema to be registered")
 	}
 }
 

@@ -1,6 +1,7 @@
 package sprout
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -128,5 +129,144 @@ func TestToJSONMap_EmbeddedStructFlattening(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseJSONTag(t *testing.T) {
+	type tags struct {
+		Default string
+		Named   string `json:"named"`
+		Omit    string `json:"omit,omitempty"`
+		Unwrap  []int  `json:"values" sprout:"unwrap"`
+		Ignore  string `json:"-"`
+	}
+
+	typ := reflect.TypeOf(tags{})
+
+	cases := []struct {
+		field string
+		name  string
+		omit  bool
+	}{
+		{"Default", "Default", false},
+		{"Named", "named", false},
+		{"Omit", "omit", true},
+		{"Unwrap", "values", false},
+		{"Ignore", "", false},
+	}
+
+	for _, tt := range cases {
+		field, ok := typ.FieldByName(tt.field)
+		if !ok {
+			t.Fatalf("field %s not found", tt.field)
+		}
+
+		info := parseJSONTag(field)
+		if info.Name != tt.name {
+			t.Errorf("%s: expected name %q, got %q", tt.field, tt.name, info.Name)
+		}
+		if info.OmitEmpty != tt.omit {
+			t.Errorf("%s: expected omitEmpty=%v, got %v", tt.field, tt.omit, info.OmitEmpty)
+		}
+	}
+}
+
+func TestIsUnwrapField(t *testing.T) {
+	type embedded struct {
+		Plain   string `json:"plain"`
+		Wrapped []int  `json:"values" sprout:"unwrap"`
+	}
+
+	typ := reflect.TypeOf(embedded{})
+
+	plain, _ := typ.FieldByName("Plain")
+	if isUnwrapField(plain) {
+		t.Fatalf("expected Plain not to be unwrap field")
+	}
+
+	wrapped, _ := typ.FieldByName("Wrapped")
+	if !isUnwrapField(wrapped) {
+		t.Fatalf("expected Wrapped to be unwrap field")
+	}
+}
+
+func TestToJSONMapSkipsUnwrapField(t *testing.T) {
+	type inner struct {
+		Value string `json:"value"`
+	}
+
+	type outer struct {
+		Metadata string  `json:"meta"`
+		Data     []inner `json:"data" sprout:"unwrap"`
+	}
+
+	payload := outer{
+		Metadata: "m1",
+		Data: []inner{
+			{Value: "first"},
+			{Value: "second"},
+		},
+	}
+
+	result := toJSONMap(payload)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 key in result, got %d", len(result))
+	}
+
+	if got, ok := result["meta"]; !ok || got != "m1" {
+		t.Fatalf("expected meta key with value %q, got %v (present=%v)", "m1", got, ok)
+	}
+
+	if _, exists := result["data"]; exists {
+		t.Fatalf("expected unwrap field to be omitted from JSON map")
+	}
+}
+
+func TestUnwrapJSONFieldValue(t *testing.T) {
+	type inner struct {
+		ID int `json:"id"`
+	}
+
+	type wrapped struct {
+		Items []inner `json:"items" sprout:"unwrap"`
+	}
+
+	type multi struct {
+		Items []inner `json:"items" sprout:"unwrap"`
+		More  []inner `json:"more" sprout:"unwrap"`
+	}
+
+	payload := &wrapped{
+		Items: []inner{{ID: 1}, {ID: 2}},
+	}
+
+	value, ok := unwrapJSONFieldValue(reflect.ValueOf(payload))
+	if !ok {
+		t.Fatalf("expected unwrap to succeed")
+	}
+
+	items, ok := value.([]inner)
+	if !ok {
+		t.Fatalf("expected unwrap value to be []inner, got %T", value)
+	}
+	if len(items) != 2 || items[0].ID != 1 || items[1].ID != 2 {
+		t.Fatalf("unexpected unwrap result: %+v", items)
+	}
+
+	nilVal, ok := unwrapJSONFieldValue(reflect.ValueOf(&wrapped{}))
+	if !ok {
+		t.Fatalf("expected unwrap to succeed for zero value slice")
+	}
+	nilSlice, ok := nilVal.([]inner)
+	if !ok {
+		t.Fatalf("expected zero value unwrap to be []inner, got %T", nilVal)
+	}
+	if nilSlice != nil {
+		t.Fatalf("expected zero value slice to unwrap as nil, got %#v", nilSlice)
+	}
+
+	if _, ok := unwrapJSONFieldValue(reflect.ValueOf(&multi{})); ok {
+		t.Fatalf("expected unwrap to fail when multiple unwrap fields exist")
 	}
 }

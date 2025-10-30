@@ -6,12 +6,69 @@ import (
 	"strings"
 )
 
+type jsonTagInfo struct {
+	Name      string
+	OmitEmpty bool
+}
+
+func parseJSONTag(field reflect.StructField) jsonTagInfo {
+	info := jsonTagInfo{
+		Name: field.Name,
+	}
+
+	tag := field.Tag.Get("json")
+	if tag == "" {
+		return info
+	}
+
+	if tag == "-" {
+		info.Name = ""
+		return info
+	}
+
+	parts := strings.Split(tag, ",")
+	if parts[0] != "" {
+		info.Name = parts[0]
+	}
+
+	for _, opt := range parts[1:] {
+		switch strings.TrimSpace(opt) {
+		case "omitempty":
+			info.OmitEmpty = true
+		}
+	}
+
+	return info
+}
+
+func hasSproutOption(field reflect.StructField, option string) bool {
+	tag := field.Tag.Get("sprout")
+	if tag == "" {
+		return false
+	}
+
+	for _, part := range strings.Split(tag, ",") {
+		if strings.TrimSpace(part) == option {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnwrapField(field reflect.StructField) bool {
+	return hasSproutOption(field, "unwrap")
+}
+
 // extractStatusCode reads the HTTP status code from struct tags.
 // Looks for a field with `http:"status=XXX"` tag.
 // Returns defaultCode if no status tag is found.
 func extractStatusCode(t reflect.Type, defaultCode int) int {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return defaultCode
 	}
 
 	for i := 0; i < t.NumField(); i++ {
@@ -40,7 +97,14 @@ func extractHeaders(v reflect.Value) map[string]string {
 	headers := make(map[string]string)
 
 	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return headers
+		}
 		v = v.Elem()
+	}
+
+	if v.Kind() != reflect.Struct {
+		return headers
 	}
 
 	t := v.Type()
@@ -96,7 +160,14 @@ func toJSONMap(v interface{}) map[string]interface{} {
 
 	val := reflect.ValueOf(v)
 	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return result
+		}
 		val = val.Elem()
+	}
+
+	if val.Kind() != reflect.Struct {
+		return result
 	}
 
 	typ := val.Type()
@@ -121,20 +192,12 @@ func toJSONMap(v interface{}) map[string]interface{} {
 					continue
 				}
 
-				// Get JSON field name
-				jsonName := embeddedField.Name
-				if jsonTag := embeddedField.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
-					parts := strings.Split(jsonTag, ",")
-					if parts[0] != "" {
-						jsonName = parts[0]
-					}
-					// Check for omitempty
-					if len(parts) > 1 && parts[1] == "omitempty" {
-						if embeddedFieldValue.IsZero() {
-							continue
-						}
-					}
+				tagInfo := parseJSONTag(embeddedField)
+				if tagInfo.Name == "" || isUnwrapField(embeddedField) {
+					continue
 				}
+
+				jsonName := tagInfo.Name
 
 				// Add the embedded field to result
 				if embeddedFieldValue.CanInterface() {
@@ -151,26 +214,122 @@ func toJSONMap(v interface{}) map[string]interface{} {
 			continue
 		}
 
-		// Get JSON field name from tag, or use struct field name
-		jsonName := field.Name
-		if jsonTag := field.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
-			// Parse json tag (handle "name,omitempty" format)
-			parts := strings.Split(jsonTag, ",")
-			if parts[0] != "" {
-				jsonName = parts[0]
-			}
-			// Check for omitempty
-			if len(parts) > 1 && parts[1] == "omitempty" {
-				// Skip zero values
-				if fieldValue.IsZero() {
-					continue
-				}
-			}
+		tagInfo := parseJSONTag(field)
+		if tagInfo.Name == "" || isUnwrapField(field) {
+			continue
+		}
+
+		if tagInfo.OmitEmpty && fieldValue.IsZero() {
+			continue
 		}
 
 		// Include the field value as-is (nested structs handled by json.Encoder)
-		result[jsonName] = fieldValue.Interface()
+		result[tagInfo.Name] = fieldValue.Interface()
 	}
 
 	return result
+}
+
+func unwrapJSONFieldValue(v reflect.Value) (interface{}, bool) {
+	if !v.IsValid() {
+		return nil, false
+	}
+
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return nil, false
+		}
+		v = v.Elem()
+	}
+
+	if v.Kind() != reflect.Struct {
+		return nil, false
+	}
+
+	var (
+		result interface{}
+		found  bool
+	)
+
+	typ := v.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		if shouldExcludeFromJSON(field) {
+			continue
+		}
+		if !isUnwrapField(field) {
+			continue
+		}
+		if found {
+			return nil, false // Multiple unwrap fields not supported
+		}
+
+		fieldValue := v.Field(i)
+		if !fieldValue.IsValid() {
+			continue
+		}
+
+		if fieldValue.Kind() == reflect.Ptr && fieldValue.IsNil() {
+			result = nil
+		} else if fieldValue.CanInterface() {
+			result = fieldValue.Interface()
+		} else if fieldValue.CanAddr() {
+			result = fieldValue.Addr().Interface()
+		} else {
+			return nil, false
+		}
+		found = true
+	}
+
+	if !found {
+		return nil, false
+	}
+
+	return result, true
+}
+
+func unwrapJSONFieldType(t reflect.Type) (reflect.Type, bool) {
+	if t == nil {
+		return nil, false
+	}
+
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil, false
+	}
+
+	var (
+		unwrapType reflect.Type
+		found      bool
+	)
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		if shouldExcludeFromJSON(field) {
+			continue
+		}
+		if !isUnwrapField(field) {
+			continue
+		}
+		if found {
+			return nil, false // Multiple unwrap fields not supported
+		}
+		unwrapType = field.Type
+		found = true
+	}
+
+	if !found {
+		return nil, false
+	}
+
+	return unwrapType, true
 }
