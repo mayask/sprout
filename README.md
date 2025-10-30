@@ -36,6 +36,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
     - [Default Error Handling](#default-error-handling)
   - [Custom Success Status Codes](#custom-success-status-codes)
 - [Custom Response Headers](#custom-response-headers)
+- [Unwrapping Response Payloads](#unwrapping-response-payloads)
 - [Empty Responses](#empty-responses)
 - [OpenAPI & Swagger](#openapi--swagger)
   - [Customizing Metadata](#customizing-metadata)
