@@ -16,6 +16,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
   - [Combining Multiple Sources](#combining-multiple-sources)
 - [Validation](#validation)
   - [Common Validation Tags](#common-validation-tags)
+  - [Custom Validators](#custom-validators)
 - [Supported HTTP Methods](#supported-http-methods)
 - [Base Path](#base-path)
 - [Nested Routers](#nested-routers)
@@ -268,6 +269,8 @@ sprout.PUT(router, "/users/:id", func(ctx context.Context, req *UpdateUserReques
 
 Sprout validates both requests **and** responses using [go-playground/validator](https://github.com/go-playground/validator) tags.
 
+> **Note:** Sprout initializes the validator with `validator.WithRequiredStructEnabled()`, opting into the stricter nesting rules that will become default in validator v11+.
+
 ### Common Validation Tags
 
 ```go
@@ -294,6 +297,42 @@ type ExampleRequest struct {
 ```
 
 See the [validator documentation](https://pkg.go.dev/github.com/go-playground/validator/v10) for all available validation tags.
+
+### Custom Validators
+
+You can extend the shared validator instance to add custom rules or custom type handling:
+
+```go
+import (
+    "reflect"
+
+    "github.com/go-playground/validator/v10"
+)
+
+router := sprout.New()
+
+// Map custom types to validation-friendly values.
+router.RegisterCustomTypeFunc(func(v reflect.Value) interface{} {
+    if v.Kind() == reflect.Ptr && !v.IsNil() {
+        v = v.Elem()
+    }
+    if wrapper, ok := v.Interface().(MyWrapper); ok {
+        return wrapper.Value
+    }
+    return nil
+}, MyWrapper{}, (*MyWrapper)(nil))
+
+// Register a custom validation tag.
+router.RegisterValidation("is-foo", func(fl validator.FieldLevel) bool {
+    return fl.Field().String() == "foo"
+})
+
+type Payload struct {
+    Value MyWrapper `validate:"is-foo"`
+}
+```
+
+Both helpers delegate to `go-playground/validator`’s `RegisterCustomTypeFunc` and `RegisterValidation`, so any customizations are available to all routes mounted on the router (and its children).
 
 ## Supported HTTP Methods
 

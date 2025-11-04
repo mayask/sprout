@@ -7,8 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/go-playground/validator/v10"
 )
 
 type EmptyRequest struct{}
@@ -2975,5 +2978,66 @@ func TestNilResponseWithOptionalFields(t *testing.T) {
 
 	if len(result) != 0 {
 		t.Errorf("expected empty JSON object {}, got %v", result)
+	}
+}
+
+func TestSproutRegisterCustomTypeFunc(t *testing.T) {
+	router := New()
+
+	type customWrapper struct {
+		Value string
+	}
+
+	var called int
+	router.RegisterCustomTypeFunc(func(field reflect.Value) interface{} {
+		called++
+		if !field.IsValid() {
+			return nil
+		}
+		if field.Kind() == reflect.Ptr {
+			if field.IsNil() {
+				return nil
+			}
+			field = field.Elem()
+		}
+		switch v := field.Interface().(type) {
+		case customWrapper:
+			return v.Value
+		default:
+			return nil
+		}
+	}, customWrapper{}, (*customWrapper)(nil))
+
+	if err := router.validate.Var(&customWrapper{Value: "bar"}, "eq=bar"); err != nil {
+		t.Fatalf("expected validation to pass, got error: %v", err)
+	}
+
+	if called == 0 {
+		t.Fatalf("expected custom type function to be called")
+	}
+}
+
+func TestSproutRegisterValidation(t *testing.T) {
+	router := New()
+
+	var called bool
+	if err := router.RegisterValidation("is-foo", func(fl validator.FieldLevel) bool {
+		called = true
+		return fl.Field().String() == "foo"
+	}); err != nil {
+		t.Fatalf("failed to register custom validation: %v", err)
+	}
+
+	type payload struct {
+		Value string `validate:"is-foo"`
+	}
+
+	err := router.validate.Struct(&payload{Value: "bar"})
+	if err == nil {
+		t.Fatalf("expected validation error for custom validator")
+	}
+
+	if !called {
+		t.Fatalf("expected custom validation to be invoked")
 	}
 }

@@ -81,9 +81,11 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 
 	registry := newRouterRegistry()
 
+	validate := validator.New(validator.WithRequiredStructEnabled())
+
 	s := &Sprout{
 		Router:   httprouter.New(),
-		validate: validator.New(),
+		validate: validate,
 		config:   config,
 		openapi:  newOpenAPIDocument(config.openapiInfo),
 		order:    &orderSeq{},
@@ -220,6 +222,16 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 	s.registry.add(child)
 
 	return child
+}
+
+// RegisterCustomTypeFunc exposes validator.RegisterCustomTypeFunc to allow custom type handling.
+func (s *Sprout) RegisterCustomTypeFunc(fn validator.CustomTypeFunc, types ...any) {
+	s.validate.RegisterCustomTypeFunc(fn, types...)
+}
+
+// RegisterValidation exposes validator.RegisterValidation to allow custom validation tags.
+func (s *Sprout) RegisterValidation(tag string, fn validator.Func, callValidationEvenIfNull ...bool) error {
+	return s.validate.RegisterValidation(tag, fn, callValidationEvenIfNull...)
 }
 
 // Use registers middleware that executes according to the router hierarchy.
