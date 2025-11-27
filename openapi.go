@@ -343,6 +343,12 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 			d.doc.Components.Schemas = openapi3.Schemas{}
 		}
 
+		// Check if this struct has union fields
+		unionFields := collectUnionFieldsFromType(t)
+		if len(unionFields) > 0 {
+			return d.buildUnionSchemaLocked(t, name, unionFields)
+		}
+
 		schema := openapi3.NewObjectSchema()
 		d.doc.Components.Schemas[name] = &openapi3.SchemaRef{Value: schema}
 
@@ -378,6 +384,142 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 	default:
 		return d.scalarSchemaRef(t)
 	}
+}
+
+// unionFieldOpenAPI holds parsed union field information for OpenAPI generation
+type unionFieldOpenAPI struct {
+	fieldIndex         int
+	fieldType          reflect.Type
+	jsonFieldName      string // The JSON field to use (e.g., "properties")
+	discriminatorField string // The struct field name (e.g., "Action")
+	discriminatorJSON  string // The JSON name of discriminator (e.g., "action")
+	discriminatorValue string // The expected value (e.g., "create")
+}
+
+// collectUnionFieldsFromType scans a struct type for union-tagged fields and returns OpenAPI info
+func collectUnionFieldsFromType(t reflect.Type) []unionFieldOpenAPI {
+	t = derefType(t)
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+
+	var unions []unionFieldOpenAPI
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		sproutTag := field.Tag.Get("sprout")
+
+		info := parseUnionTag(sproutTag)
+		if info == nil {
+			continue
+		}
+
+		// Find the discriminator field to get its JSON name
+		discriminatorJSON := ""
+		for j := 0; j < t.NumField(); j++ {
+			if t.Field(j).Name == info.discriminatorField {
+				tagInfo := parseJSONTag(t.Field(j))
+				if tagInfo.Name != "" {
+					discriminatorJSON = tagInfo.Name
+				} else {
+					discriminatorJSON = info.discriminatorField
+				}
+				break
+			}
+		}
+
+		unions = append(unions, unionFieldOpenAPI{
+			fieldIndex:         i,
+			fieldType:          field.Type,
+			jsonFieldName:      info.jsonFieldName,
+			discriminatorField: info.discriminatorField,
+			discriminatorJSON:  discriminatorJSON,
+			discriminatorValue: info.discriminatorValue,
+		})
+	}
+
+	return unions
+}
+
+// buildUnionSchemaLocked builds an OpenAPI schema with oneOf and discriminator for union types
+func (d *openAPIDocument) buildUnionSchemaLocked(t reflect.Type, baseName string, unions []unionFieldOpenAPI) *openapi3.SchemaRef {
+	if len(unions) == 0 {
+		return &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()}
+	}
+
+	// Get discriminator property name (should be same for all union fields)
+	discriminatorJSON := unions[0].discriminatorJSON
+
+	// Collect non-union fields (common to all variants)
+	var commonFields []reflect.StructField
+	for _, field := range exportedFields(t) {
+		if shouldExcludeFromJSON(field) {
+			continue
+		}
+		tagInfo := parseJSONTag(field)
+		if tagInfo.Name == "" || isUnwrapField(field) {
+			continue
+		}
+		// Skip the discriminator field - it will be handled specially per variant
+		if field.Name == unions[0].discriminatorField {
+			continue
+		}
+		commonFields = append(commonFields, field)
+	}
+
+	// Build oneOf schemas and discriminator mapping
+	var oneOfRefs openapi3.SchemaRefs
+	mapping := make(map[string]string)
+
+	for _, union := range unions {
+		variantName := baseName + "_" + union.discriminatorValue
+		variantRef := "#/components/schemas/" + variantName
+
+		// Create variant schema
+		variantSchema := openapi3.NewObjectSchema()
+
+		// Add discriminator field with enum constraint
+		discriminatorSchema := openapi3.NewStringSchema()
+		discriminatorSchema.Enum = []any{union.discriminatorValue}
+		variantSchema.Properties[discriminatorJSON] = &openapi3.SchemaRef{Value: discriminatorSchema}
+		variantSchema.Required = append(variantSchema.Required, discriminatorJSON)
+
+		// Add the union field (e.g., "properties")
+		unionFieldType := derefType(union.fieldType)
+		variantSchema.Properties[union.jsonFieldName] = d.schemaRefLocked(unionFieldType)
+		variantSchema.Required = append(variantSchema.Required, union.jsonFieldName)
+
+		// Add common fields
+		for _, field := range commonFields {
+			tagInfo := parseJSONTag(field)
+			variantSchema.Properties[tagInfo.Name] = d.inlineSchemaRefLocked(field.Type)
+			if hasRequiredValidation(field.Tag.Get("validate")) && !tagInfo.OmitEmpty {
+				variantSchema.Required = append(variantSchema.Required, tagInfo.Name)
+			}
+		}
+
+		if len(variantSchema.Required) > 1 {
+			sort.Strings(variantSchema.Required)
+		}
+
+		d.doc.Components.Schemas[variantName] = &openapi3.SchemaRef{Value: variantSchema}
+
+		oneOfRefs = append(oneOfRefs, openapi3.NewSchemaRef(variantRef, nil))
+		mapping[union.discriminatorValue] = variantRef
+	}
+
+	// Create the main union schema with oneOf and discriminator
+	unionSchema := &openapi3.Schema{
+		OneOf: oneOfRefs,
+		Discriminator: &openapi3.Discriminator{
+			PropertyName: discriminatorJSON,
+			Mapping:      mapping,
+		},
+	}
+
+	d.doc.Components.Schemas[baseName] = &openapi3.SchemaRef{Value: unionSchema}
+
+	return openapi3.NewSchemaRef("#/components/schemas/"+baseName, nil)
 }
 
 func (d *openAPIDocument) scalarSchemaRef(t reflect.Type) *openapi3.SchemaRef {

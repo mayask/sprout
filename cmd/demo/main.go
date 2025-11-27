@@ -47,6 +47,38 @@ type getUserResponse struct {
 
 type pingRequest struct{}
 
+// Union type example: different event payloads based on event type
+
+type userCreatedPayload struct {
+	UserID string `json:"user_id" validate:"required,uuid4"`
+	Name   string `json:"name" validate:"required"`
+	Email  string `json:"email" validate:"required,email"`
+}
+
+type userUpdatedPayload struct {
+	UserID    string   `json:"user_id" validate:"required,uuid4"`
+	Fields    []string `json:"fields" validate:"required,min=1"`
+	UpdatedBy string   `json:"updated_by" validate:"required"`
+}
+
+type userDeletedPayload struct {
+	UserID string `json:"user_id" validate:"required,uuid4"`
+	Reason string `json:"reason" validate:"required"`
+}
+
+// eventRequest demonstrates union types - the payload field changes based on event_type
+type eventRequest struct {
+	EventType   string              `json:"event_type" validate:"required,oneof=user.created user.updated user.deleted"`
+	UserCreated *userCreatedPayload `json:"-" sprout:"union=payload,when=EventType:user.created" validate:"union"`
+	UserUpdated *userUpdatedPayload `json:"-" sprout:"union=payload,when=EventType:user.updated" validate:"union"`
+	UserDeleted *userDeletedPayload `json:"-" sprout:"union=payload,when=EventType:user.deleted" validate:"union"`
+}
+
+type eventResponse struct {
+	Processed bool   `json:"processed"`
+	Message   string `json:"message"`
+}
+
 func main() {
 	router := sprout.NewWithConfig(nil, sprout.WithOpenAPIInfo(sprout.OpenAPIInfo{
 		Title:       "Sprout Demo API",
@@ -84,6 +116,28 @@ func main() {
 			Name:  "Demo User",
 			Email: "demo@example.com",
 		}, nil
+	})
+
+	// Union type endpoint - payload structure depends on event_type
+	sprout.POST(router, "/events", func(ctx context.Context, req *eventRequest) (*eventResponse, error) {
+		switch req.EventType {
+		case "user.created":
+			return &eventResponse{
+				Processed: true,
+				Message:   "Created user: " + req.UserCreated.Name,
+			}, nil
+		case "user.updated":
+			return &eventResponse{
+				Processed: true,
+				Message:   "Updated user " + req.UserUpdated.UserID + ", fields: " + req.UserUpdated.Fields[0],
+			}, nil
+		case "user.deleted":
+			return &eventResponse{
+				Processed: true,
+				Message:   "Deleted user " + req.UserDeleted.UserID + " for reason: " + req.UserDeleted.Reason,
+			}, nil
+		}
+		return &eventResponse{Processed: false, Message: "unknown event"}, nil
 	})
 
 	log.Println("listening on http://localhost:8080 (swagger at /swagger)")

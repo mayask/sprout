@@ -338,3 +338,202 @@ func pathKeys(paths *openapi3.Paths) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// Union type test DTOs for OpenAPI
+type openAPICreateUserProps struct {
+	Name  string `json:"name" validate:"required,min=2"`
+	Email string `json:"email" validate:"required,email"`
+}
+
+type openAPIUpdateUserProps struct {
+	UserID string `json:"user_id" validate:"required,uuid4"`
+	Name   string `json:"name" validate:"required"`
+}
+
+type openAPIDeleteUserProps struct {
+	UserID string `json:"user_id" validate:"required,uuid4"`
+	Reason string `json:"reason" validate:"required"`
+}
+
+type openAPIUserActionRequest struct {
+	Action string                  `json:"action" validate:"required,oneof=create update delete"`
+	Create *openAPICreateUserProps `json:"-" sprout:"union=properties,when=Action:create" validate:"union"`
+	Update *openAPIUpdateUserProps `json:"-" sprout:"union=properties,when=Action:update" validate:"union"`
+	Delete *openAPIDeleteUserProps `json:"-" sprout:"union=properties,when=Action:delete" validate:"union"`
+}
+
+type openAPIUserActionResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type openAPIResponseShapeA struct {
+	Message string `json:"message"`
+	Count   int    `json:"count"`
+}
+
+type openAPIResponseShapeB struct {
+	Status string `json:"status"`
+	Code   int    `json:"code"`
+}
+
+type openAPIUnionResponse struct {
+	Type   string                 `json:"type" validate:"required,oneof=a b"`
+	ShapeA *openAPIResponseShapeA `json:"-" sprout:"union=data,when=Type:a" validate:"union"`
+	ShapeB *openAPIResponseShapeB `json:"-" sprout:"union=data,when=Type:b" validate:"union"`
+}
+
+type openAPISimpleRequest struct {
+	WantType string `json:"want_type" validate:"required,oneof=a b"`
+}
+
+func TestOpenAPIUnionSchema(t *testing.T) {
+	router := New()
+
+	// Register a route with union request type
+	POST(router, "/action", func(ctx context.Context, req *openAPIUserActionRequest) (*openAPIUserActionResponse, error) {
+		return &openAPIUserActionResponse{Success: true}, nil
+	})
+
+	// Get OpenAPI spec
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to get OpenAPI JSON: %v", err)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(specBytes)
+	if err != nil {
+		t.Fatalf("failed to parse OpenAPI JSON: %v", err)
+	}
+
+	schemas := doc.Components.Schemas
+
+	// Check that the main union schema exists and has oneOf
+	mainSchema := schemas["sprout_openAPIUserActionRequest"]
+	if mainSchema == nil || mainSchema.Value == nil {
+		t.Fatal("missing openAPIUserActionRequest schema")
+	}
+
+	// Should have oneOf
+	if len(mainSchema.Value.OneOf) != 3 {
+		t.Errorf("expected 3 oneOf variants, got %d", len(mainSchema.Value.OneOf))
+	}
+
+	// Should have discriminator
+	if mainSchema.Value.Discriminator == nil {
+		t.Fatal("openAPIUserActionRequest should have discriminator")
+	}
+
+	if mainSchema.Value.Discriminator.PropertyName != "action" {
+		t.Errorf("expected discriminator propertyName 'action', got %q", mainSchema.Value.Discriminator.PropertyName)
+	}
+
+	// Check discriminator mapping
+	expectedMappings := []string{"create", "update", "delete"}
+	for _, key := range expectedMappings {
+		if _, exists := mainSchema.Value.Discriminator.Mapping[key]; !exists {
+			t.Errorf("missing discriminator mapping for %q", key)
+		}
+	}
+
+	// Check variant schemas exist
+	variantNames := []string{
+		"sprout_openAPIUserActionRequest_create",
+		"sprout_openAPIUserActionRequest_update",
+		"sprout_openAPIUserActionRequest_delete",
+	}
+
+	for _, name := range variantNames {
+		variant := schemas[name]
+		if variant == nil || variant.Value == nil {
+			t.Errorf("missing variant schema %q", name)
+			continue
+		}
+
+		// Each variant should have properties
+		if variant.Value.Properties == nil {
+			t.Errorf("variant %q missing properties", name)
+			continue
+		}
+
+		// Should have action property
+		if variant.Value.Properties["action"] == nil {
+			t.Errorf("variant %q missing 'action' property", name)
+		}
+
+		// Should have properties field (the union field)
+		if variant.Value.Properties["properties"] == nil {
+			t.Errorf("variant %q missing 'properties' field", name)
+		}
+
+		// Should have required fields
+		hasAction := false
+		hasProperties := false
+		for _, r := range variant.Value.Required {
+			if r == "action" {
+				hasAction = true
+			}
+			if r == "properties" {
+				hasProperties = true
+			}
+		}
+		if !hasAction {
+			t.Errorf("variant %q should require 'action'", name)
+		}
+		if !hasProperties {
+			t.Errorf("variant %q should require 'properties'", name)
+		}
+	}
+
+	// Check that the create variant references the correct payload type
+	createVariant := schemas["sprout_openAPIUserActionRequest_create"]
+	if createVariant != nil && createVariant.Value != nil {
+		propsField := createVariant.Value.Properties["properties"]
+		if propsField != nil && propsField.Ref != "#/components/schemas/sprout_openAPICreateUserProps" {
+			t.Errorf("create variant properties should reference openAPICreateUserProps, got %q", propsField.Ref)
+		}
+	}
+}
+
+func TestOpenAPIUnionResponseSchema(t *testing.T) {
+	router := New()
+
+	// Register a route with union response type
+	POST(router, "/respond", func(ctx context.Context, req *openAPISimpleRequest) (*openAPIUnionResponse, error) {
+		return &openAPIUnionResponse{Type: "a", ShapeA: &openAPIResponseShapeA{Message: "test", Count: 1}}, nil
+	})
+
+	// Get OpenAPI spec
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to get OpenAPI JSON: %v", err)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(specBytes)
+	if err != nil {
+		t.Fatalf("failed to parse OpenAPI JSON: %v", err)
+	}
+
+	schemas := doc.Components.Schemas
+
+	// Check that UnionResponse has oneOf
+	responseSchema := schemas["sprout_openAPIUnionResponse"]
+	if responseSchema == nil || responseSchema.Value == nil {
+		t.Fatal("missing openAPIUnionResponse schema")
+	}
+
+	if len(responseSchema.Value.OneOf) != 2 {
+		t.Errorf("expected 2 oneOf variants for openAPIUnionResponse, got %d", len(responseSchema.Value.OneOf))
+	}
+
+	// Check discriminator
+	if responseSchema.Value.Discriminator == nil {
+		t.Fatal("openAPIUnionResponse should have discriminator")
+	}
+
+	if responseSchema.Value.Discriminator.PropertyName != "type" {
+		t.Errorf("expected discriminator propertyName 'type', got %q", responseSchema.Value.Discriminator.PropertyName)
+	}
+}
