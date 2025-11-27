@@ -227,6 +227,9 @@ func toJSONMap(v interface{}) map[string]interface{} {
 		result[tagInfo.Name] = fieldValue.Interface()
 	}
 
+	// Handle union fields - these have json:"-" but should be serialized if active
+	serializeUnionFields(val, typ, result)
+
 	return result
 }
 

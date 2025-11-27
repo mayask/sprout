@@ -82,6 +82,7 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 	registry := newRouterRegistry()
 
 	validate := validator.New(validator.WithRequiredStructEnabled())
+	registerUnionValidation(validate)
 
 	s := &Sprout{
 		Router:   httprouter.New(),
@@ -389,6 +390,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		}
 
 		// Parse JSON body into struct (excluding tagged fields)
+		var bodyMap map[string]json.RawMessage
 		if req.Body != nil && req.ContentLength > 0 {
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
@@ -409,6 +411,27 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 						Err:     err,
 					})
 					return
+				}
+
+				// Also unmarshal into map for union field handling
+				if unions := collectUnionFields(reqType); len(unions) > 0 {
+					if err := json.Unmarshal(body, &bodyMap); err != nil {
+						handleError(s, w, req, &Error{
+							Kind:    ErrorKindParse,
+							Message: "invalid JSON",
+							Err:     err,
+						})
+						return
+					}
+
+					if err := unmarshalUnionFields(reqValue, bodyMap, unions); err != nil {
+						handleError(s, w, req, &Error{
+							Kind:    ErrorKindParse,
+							Message: "failed to parse union field",
+							Err:     err,
+						})
+						return
+					}
 				}
 			}
 		}
