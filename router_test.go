@@ -203,6 +203,71 @@ func TestSproutValidationFailure(t *testing.T) {
 	}
 }
 
+func TestValidationErrorUsesJSONTagNames(t *testing.T) {
+	type AddressInput struct {
+		StreetName string `json:"street_name" validate:"required"`
+		ZipCode    string `json:"zip_code" validate:"required,len=5"`
+	}
+
+	type CreateOrderRequest struct {
+		OrderID  string       `json:"order_id" validate:"required"`
+		Shipping AddressInput `json:"shipping_address" validate:"required"`
+	}
+
+	var capturedErr error
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			capturedErr = err
+			w.WriteHeader(http.StatusBadRequest)
+		},
+	})
+
+	POST(router, "/orders", func(ctx context.Context, req *CreateOrderRequest) (*HelloResponse, error) {
+		return &HelloResponse{Message: "ok"}, nil
+	})
+
+	// Invalid: zip_code too short
+	reqBody := map[string]any{
+		"order_id": "123",
+		"shipping_address": map[string]any{
+			"street_name": "Main St",
+			"zip_code":    "123", // should be 5 chars
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/orders", bytes.NewReader(body)))
+
+	var sproutErr *Error
+	if !errors.As(capturedErr, &sproutErr) {
+		t.Fatalf("expected *sprout.Error, got %T", capturedErr)
+	}
+
+	var validationErrs validator.ValidationErrors
+	if !errors.As(sproutErr.Err, &validationErrs) {
+		t.Fatalf("expected validator.ValidationErrors, got %T", sproutErr.Err)
+	}
+
+	if len(validationErrs) != 1 {
+		t.Fatalf("expected 1 field error, got %d: %+v", len(validationErrs), validationErrs)
+	}
+
+	fe := validationErrs[0]
+
+	// Field() should return JSON tag name "zip_code", not struct field name "ZipCode"
+	if fe.Field() != "zip_code" {
+		t.Errorf("expected field 'zip_code', got %q", fe.Field())
+	}
+
+	// Namespace() should use JSON tag names: "CreateOrderRequest.shipping_address.zip_code"
+	// Users can strip the root struct name to get the JSON path: "shipping_address.zip_code"
+	ns := fe.Namespace()
+	if !strings.Contains(ns, "shipping_address.zip_code") {
+		t.Errorf("expected namespace to contain 'shipping_address.zip_code', got %q", ns)
+	}
+}
+
 // Test with path, query, and header parameters
 type GetUserRequest struct {
 	UserID    string `path:"id" validate:"required"`

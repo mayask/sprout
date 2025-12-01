@@ -83,6 +83,16 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 
 	validate := validator.New(validator.WithRequiredStructEnabled())
 
+	// Use JSON tag names in validation errors so error messages match the HTTP request field names
+	validate.RegisterTagNameFunc(func(fld reflect.StructField) string {
+		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
+		// skip if tag key says it should be ignored
+		if name == "-" {
+			return ""
+		}
+		return name
+	})
+
 	s := &Sprout{
 		Router:   httprouter.New(),
 		validate: validate,
