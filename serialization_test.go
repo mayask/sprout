@@ -1,7 +1,13 @@
 package sprout
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -269,4 +275,185 @@ func TestUnwrapJSONFieldValue(t *testing.T) {
 	if _, ok := unwrapJSONFieldValue(reflect.ValueOf(&multi{})); ok {
 		t.Fatalf("expected unwrap to fail when multiple unwrap fields exist")
 	}
+}
+
+// Test helper type
+type testHelloResponse struct {
+	Message string `json:"message"`
+}
+
+// TestParseErrorStructuredData verifies that users can extract structured information
+// from parse errors for both JSON body and parameter parsing failures
+func TestParseErrorStructuredData(t *testing.T) {
+	t.Run("JSONBody", func(t *testing.T) {
+		type CreateUserRequest struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+
+		var capturedErr error
+		router := NewWithConfig(&Config{
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				capturedErr = err
+				w.WriteHeader(http.StatusBadRequest)
+			},
+		})
+
+		POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*testHelloResponse, error) {
+			return &testHelloResponse{Message: "ok"}, nil
+		})
+
+		// Send JSON with wrong type for "age" field
+		reqBody := `{"name": "John", "age": "not-a-number"}`
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", strings.NewReader(reqBody)))
+
+		var sproutErr *Error
+		if !errors.As(capturedErr, &sproutErr) {
+			t.Fatalf("expected *sprout.Error, got %T", capturedErr)
+		}
+
+		// Extract json.UnmarshalTypeError for JSON parse errors
+		var unmarshalErr *json.UnmarshalTypeError
+		if !errors.As(sproutErr.Err, &unmarshalErr) {
+			t.Fatalf("expected *json.UnmarshalTypeError, got %T", sproutErr.Err)
+		}
+
+		if unmarshalErr.Field != "age" {
+			t.Errorf("expected field 'age', got %q", unmarshalErr.Field)
+		}
+		if unmarshalErr.Value != "string" {
+			t.Errorf("expected value 'string', got %q", unmarshalErr.Value)
+		}
+	})
+
+	t.Run("QueryParameter", func(t *testing.T) {
+		type ListRequest struct {
+			Page int `query:"page"`
+		}
+
+		var capturedErr error
+		router := NewWithConfig(&Config{
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				capturedErr = err
+				w.WriteHeader(http.StatusBadRequest)
+			},
+		})
+
+		GET(router, "/items", func(ctx context.Context, req *ListRequest) (*testHelloResponse, error) {
+			return &testHelloResponse{Message: "ok"}, nil
+		})
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/items?page=not-a-number", nil))
+
+		var sproutErr *Error
+		if !errors.As(capturedErr, &sproutErr) {
+			t.Fatalf("expected *sprout.Error, got %T", capturedErr)
+		}
+
+		// Extract ParseParameterError for query/path/header parse errors
+		var paramErr *ParseParameterError
+		if !errors.As(sproutErr.Err, &paramErr) {
+			t.Fatalf("expected *ParseParameterError, got %T", sproutErr.Err)
+		}
+
+		if paramErr.Parameter != "page" {
+			t.Errorf("expected parameter 'page', got %q", paramErr.Parameter)
+		}
+		if paramErr.Source != ParameterSourceQuery {
+			t.Errorf("expected source 'query', got %q", paramErr.Source)
+		}
+		if paramErr.Value != "not-a-number" {
+			t.Errorf("expected value 'not-a-number', got %q", paramErr.Value)
+		}
+	})
+
+	t.Run("PathParameter", func(t *testing.T) {
+		type GetItemRequest struct {
+			ID int `path:"id"`
+		}
+
+		var capturedErr error
+		router := NewWithConfig(&Config{
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				capturedErr = err
+				w.WriteHeader(http.StatusBadRequest)
+			},
+		})
+
+		GET(router, "/items/:id", func(ctx context.Context, req *GetItemRequest) (*testHelloResponse, error) {
+			return &testHelloResponse{Message: "ok"}, nil
+		})
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest("GET", "/items/not-a-number", nil))
+
+		var sproutErr *Error
+		if !errors.As(capturedErr, &sproutErr) {
+			t.Fatalf("expected *sprout.Error, got %T", capturedErr)
+		}
+
+		// Extract ParseParameterError for path parameter parse errors
+		var paramErr *ParseParameterError
+		if !errors.As(sproutErr.Err, &paramErr) {
+			t.Fatalf("expected *ParseParameterError, got %T", sproutErr.Err)
+		}
+
+		if paramErr.Parameter != "id" {
+			t.Errorf("expected parameter 'id', got %q", paramErr.Parameter)
+		}
+		if paramErr.Source != ParameterSourcePath {
+			t.Errorf("expected source 'path', got %q", paramErr.Source)
+		}
+		if paramErr.Value != "not-a-number" {
+			t.Errorf("expected value 'not-a-number', got %q", paramErr.Value)
+		}
+	})
+
+	t.Run("HeaderParameter", func(t *testing.T) {
+		type HeaderRequest struct {
+			Retry int `header:"X-Retry-Count"`
+		}
+
+		var capturedErr error
+		router := NewWithConfig(&Config{
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				capturedErr = err
+				w.WriteHeader(http.StatusBadRequest)
+			},
+		})
+
+		GET(router, "/status", func(ctx context.Context, req *HeaderRequest) (*testHelloResponse, error) {
+			return &testHelloResponse{Message: "ok"}, nil
+		})
+
+		req := httptest.NewRequest("GET", "/status", nil)
+		req.Header.Set("X-Retry-Count", "not-a-number")
+
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+
+		var sproutErr *Error
+		if !errors.As(capturedErr, &sproutErr) {
+			t.Fatalf("expected *sprout.Error, got %T", capturedErr)
+		}
+
+		// Extract ParseParameterError for header parameter parse errors
+		var paramErr *ParseParameterError
+		if !errors.As(sproutErr.Err, &paramErr) {
+			t.Fatalf("expected *ParseParameterError, got %T", sproutErr.Err)
+		}
+
+		if paramErr.Parameter != "X-Retry-Count" {
+			t.Errorf("expected parameter 'X-Retry-Count', got %q", paramErr.Parameter)
+		}
+		if paramErr.Source != ParameterSourceHeader {
+			t.Errorf("expected source 'header', got %q", paramErr.Source)
+		}
+		if paramErr.Value != "not-a-number" {
+			t.Errorf("expected value 'not-a-number', got %q", paramErr.Value)
+		}
+	})
 }

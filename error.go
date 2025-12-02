@@ -65,6 +65,41 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
+// ParameterSource indicates where a parameter came from in the HTTP request.
+type ParameterSource string
+
+const (
+	ParameterSourcePath   ParameterSource = "path"
+	ParameterSourceQuery  ParameterSource = "query"
+	ParameterSourceHeader ParameterSource = "header"
+)
+
+// ParseParameterError represents an error parsing a path, query, or header parameter.
+// This provides structured information similar to json.UnmarshalTypeError.
+type ParseParameterError struct {
+	// Parameter is the name of the parameter that failed to parse (e.g., "page", "id").
+	Parameter string
+
+	// Source indicates where the parameter came from (path, query, or header).
+	Source ParameterSource
+
+	// Value is the raw string value that failed to parse.
+	Value string
+
+	// Err is the underlying parse error (e.g., from strconv).
+	Err error
+}
+
+// Error implements the error interface.
+func (e *ParseParameterError) Error() string {
+	return fmt.Sprintf("failed to parse %s parameter '%s': %v", e.Source, e.Parameter, e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *ParseParameterError) Unwrap() error {
+	return e.Err
+}
+
 // handleError routes errors to either the custom error handler or the default handler.
 func handleError(s *Sprout, w http.ResponseWriter, r *http.Request, err error) {
 	if err == nil {

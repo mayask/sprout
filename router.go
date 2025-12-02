@@ -365,7 +365,12 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 					handleError(s, w, req, &Error{
 						Kind:    ErrorKindParse,
 						Message: fmt.Sprintf("invalid path parameter '%s'", pathTag),
-						Err:     err,
+						Err: &ParseParameterError{
+							Parameter: pathTag,
+							Source:    ParameterSourcePath,
+							Value:     paramValue,
+							Err:       err,
+						},
 					})
 					return
 				}
@@ -378,7 +383,12 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 					handleError(s, w, req, &Error{
 						Kind:    ErrorKindParse,
 						Message: fmt.Sprintf("invalid query parameter '%s'", queryTag),
-						Err:     err,
+						Err: &ParseParameterError{
+							Parameter: queryTag,
+							Source:    ParameterSourceQuery,
+							Value:     queryValue,
+							Err:       err,
+						},
 					})
 					return
 				}
@@ -391,7 +401,12 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 					handleError(s, w, req, &Error{
 						Kind:    ErrorKindParse,
 						Message: fmt.Sprintf("invalid header '%s'", headerTag),
-						Err:     err,
+						Err: &ParseParameterError{
+							Parameter: headerTag,
+							Source:    ParameterSourceHeader,
+							Value:     headerValue,
+							Err:       err,
+						},
 					})
 					return
 				}
