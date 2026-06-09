@@ -181,6 +181,23 @@ sprout.PUT(router, "/profile", func(ctx context.Context, req *UpdateProfileReque
 })
 ```
 
+#### Raw Request Bodies
+
+Use `WithRawRequest()` for multipart uploads or other handlers that need to read the original body themselves. Sprout still parses and validates path, query, and header fields, but skips JSON body parsing.
+
+```go
+sprout.POST(router, "/uploads", func(ctx context.Context, req *UploadRequest) (*UploadResponse, error) {
+    httpReq := sprout.HTTPRequest(ctx)
+    reader, err := httpReq.MultipartReader()
+    if err != nil {
+        return nil, err
+    }
+
+    // Read multipart parts from reader.
+    return &UploadResponse{Status: "ok"}, nil
+}, sprout.WithRawRequest())
+```
+
 #### Nested Objects in Request Body
 
 Sprout supports nested objects with full validation:

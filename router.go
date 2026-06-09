@@ -267,6 +267,7 @@ type RouteOption func(*routeConfig)
 type routeConfig struct {
 	expectedErrors []reflect.Type
 	middlewares    []Middleware
+	rawRequestBody bool
 }
 
 // WithErrors registers expected error types for validation and documentation
@@ -292,6 +293,14 @@ func WithMiddleware(mw ...Middleware) RouteOption {
 			}
 			cfg.middlewares = append(cfg.middlewares, fn)
 		}
+	}
+}
+
+// WithRawRequest leaves the HTTP request body untouched for the handler.
+// Path, query, and header fields are still parsed into the typed request DTO.
+func WithRawRequest() RouteOption {
+	return func(cfg *routeConfig) {
+		cfg.rawRequestBody = true
 	}
 }
 
@@ -338,7 +347,7 @@ func setFieldValue(fieldValue reflect.Value, value string) error {
 func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *routeConfig) Middleware {
 	return func(w http.ResponseWriter, req *http.Request, next Next) {
 		s := entry.owner
-		ctx := req.Context()
+		ctx := withHTTPRequest(req.Context(), req)
 
 		// Parse request into the typed DTO
 		var reqDTO Req
@@ -414,7 +423,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		}
 
 		// Parse JSON body into struct (excluding tagged fields)
-		if req.Body != nil && req.ContentLength > 0 {
+		if !cfg.rawRequestBody && req.Body != nil && req.ContentLength > 0 {
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				handleError(s, w, req, &Error{

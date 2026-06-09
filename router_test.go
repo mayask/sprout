@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -402,6 +404,155 @@ func TestSproutWithBodyAndParams(t *testing.T) {
 	}
 	if resp.Email != "jane@example.com" {
 		t.Errorf("expected Email 'jane@example.com', got '%s'", resp.Email)
+	}
+}
+
+type RawUploadRequest struct {
+	AccountID string `path:"account_id" validate:"required"`
+	AuthToken string `header:"Authorization" validate:"required"`
+}
+
+type RawUploadResponse struct {
+	AccountID string `json:"account_id"`
+	Mapping   string `json:"mapping"`
+	File      string `json:"file"`
+}
+
+func newMultipartUploadRequest(t *testing.T, path string) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := writer.WriteField("mapping", `{"amount":2}`); err != nil {
+		t.Fatalf("failed to write mapping field: %v", err)
+	}
+
+	filePart, err := writer.CreateFormFile("file", "payments.csv")
+	if err != nil {
+		t.Fatalf("failed to create file field: %v", err)
+	}
+	if _, err := filePart.Write([]byte("account,amount\n123,10\n")); err != nil {
+		t.Fatalf("failed to write file field: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, path, &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
+func TestWithRawRequestAllowsMultipartHandlerToReadOriginalRequest(t *testing.T) {
+	router := New()
+
+	POST(router, "/accounts/:account_id/uploads", func(ctx context.Context, req *RawUploadRequest) (*RawUploadResponse, error) {
+		httpReq := HTTPRequest(ctx)
+		if httpReq == nil {
+			t.Fatal("expected HTTPRequest(ctx) to return the original request")
+		}
+
+		reader, err := httpReq.MultipartReader()
+		if err != nil {
+			t.Fatalf("expected multipart reader: %v", err)
+		}
+
+		var mapping string
+		var file string
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("failed to read multipart part: %v", err)
+			}
+
+			content, err := io.ReadAll(part)
+			if err != nil {
+				t.Fatalf("failed to read multipart content: %v", err)
+			}
+
+			switch part.FormName() {
+			case "mapping":
+				mapping = string(content)
+			case "file":
+				file = string(content)
+			}
+		}
+
+		return &RawUploadResponse{
+			AccountID: req.AccountID,
+			Mapping:   mapping,
+			File:      file,
+		}, nil
+	}, WithRawRequest())
+
+	httpReq := newMultipartUploadRequest(t, "/accounts/acct_123/uploads")
+	httpReq.Header.Set("Authorization", "Bearer token")
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httpReq)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status OK, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var resp RawUploadResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.AccountID != "acct_123" {
+		t.Errorf("expected path parameter to be parsed, got %q", resp.AccountID)
+	}
+	if resp.Mapping != `{"amount":2}` {
+		t.Errorf("expected mapping part to be readable, got %q", resp.Mapping)
+	}
+	if resp.File != "account,amount\n123,10\n" {
+		t.Errorf("expected file part to be readable, got %q", resp.File)
+	}
+}
+
+func TestMultipartWithoutRawRequestStillUsesJSONParsing(t *testing.T) {
+	router := New()
+	handlerCalled := false
+
+	POST(router, "/uploads", func(ctx context.Context, req *RawUploadRequest) (*RawUploadResponse, error) {
+		handlerCalled = true
+		return &RawUploadResponse{}, nil
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, newMultipartUploadRequest(t, "/uploads"))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", recorder.Code)
+	}
+	if handlerCalled {
+		t.Fatal("expected handler not to be called")
+	}
+}
+
+func TestWithRawRequestStillValidatesParsedFields(t *testing.T) {
+	router := New()
+	handlerCalled := false
+
+	POST(router, "/accounts/:account_id/uploads", func(ctx context.Context, req *RawUploadRequest) (*RawUploadResponse, error) {
+		handlerCalled = true
+		return &RawUploadResponse{}, nil
+	}, WithRawRequest())
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, newMultipartUploadRequest(t, "/accounts/acct_123/uploads"))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", recorder.Code)
+	}
+	if handlerCalled {
+		t.Fatal("expected handler not to be called")
 	}
 }
 

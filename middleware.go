@@ -201,7 +201,10 @@ func (s *Sprout) handleChainError(w http.ResponseWriter, req *http.Request, err 
 
 type contextKey string
 
-const paramsContextKey contextKey = "sprout:params"
+const (
+	paramsContextKey      contextKey = "sprout:params"
+	httpRequestContextKey contextKey = "sprout:http_request"
+)
 
 // withParams stores httprouter params on the request context so middleware and
 // handlers can access them uniformly via Params().
@@ -214,6 +217,20 @@ func Params(r *http.Request) httprouter.Params {
 	if value := r.Context().Value(paramsContextKey); value != nil {
 		if params, ok := value.(httprouter.Params); ok {
 			return params
+		}
+	}
+	return nil
+}
+
+func withHTTPRequest(ctx context.Context, req *http.Request) context.Context {
+	return context.WithValue(ctx, httpRequestContextKey, req)
+}
+
+// HTTPRequest returns the original HTTP request for the current typed handler context.
+func HTTPRequest(ctx context.Context) *http.Request {
+	if value := ctx.Value(httpRequestContextKey); value != nil {
+		if req, ok := value.(*http.Request); ok {
+			return req
 		}
 	}
 	return nil
