@@ -349,7 +349,16 @@ type Payload struct {
 }
 ```
 
-Both helpers delegate to `go-playground/validator`’s `RegisterCustomTypeFunc` and `RegisterValidation`, so any customizations are available to all routes mounted on the router (and its children).
+For validation that belongs to a Go type rather than a struct tag, register a type validator. Sprout recursively applies these callbacks to parsed request and response DTO values, which is useful for custom value objects such as string-backed enums:
+
+```go
+router.RegisterTypeValidationFunc(func(v reflect.Value) error {
+    // Return nil for types this callback does not handle.
+    return nil
+})
+```
+
+`RegisterCustomTypeFunc` and `RegisterValidation` delegate to `go-playground/validator`. Type validators are Sprout-level callbacks that run in addition to tag-based validation. All customizations are available to routes mounted on the router and its children.
 
 ## Supported HTTP Methods
 

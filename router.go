@@ -18,12 +18,13 @@ import (
 
 type Sprout struct {
 	*httprouter.Router
-	validate *validator.Validate
-	config   *Config
-	openapi  *openAPIDocument
-	parent   *Sprout
-	order    *orderSeq
-	registry *routerRegistry
+	validate       *validator.Validate
+	config         *Config
+	openapi        *openAPIDocument
+	parent         *Sprout
+	order          *orderSeq
+	registry       *routerRegistry
+	typeValidators *typeValidationRegistry
 
 	mwMu        sync.RWMutex
 	middlewares []middlewareLayer
@@ -94,12 +95,13 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 	})
 
 	s := &Sprout{
-		Router:   httprouter.New(),
-		validate: validate,
-		config:   config,
-		openapi:  newOpenAPIDocument(config.openapiInfo),
-		order:    &orderSeq{},
-		registry: registry,
+		Router:         httprouter.New(),
+		validate:       validate,
+		config:         config,
+		openapi:        newOpenAPIDocument(config.openapiInfo),
+		order:          &orderSeq{},
+		registry:       registry,
+		typeValidators: newTypeValidationRegistry(),
 	}
 	registry.add(s)
 
@@ -221,13 +223,14 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 	childConfig.BasePath = combineBasePath(s.config.BasePath, prefix, childConfig.BasePath)
 
 	child := &Sprout{
-		Router:   s.Router,
-		validate: s.validate,
-		config:   &childConfig,
-		openapi:  s.openapi,
-		parent:   s,
-		order:    s.order,
-		registry: s.registry,
+		Router:         s.Router,
+		validate:       s.validate,
+		config:         &childConfig,
+		openapi:        s.openapi,
+		parent:         s,
+		order:          s.order,
+		registry:       s.registry,
+		typeValidators: s.typeValidators,
 	}
 	s.registry.add(child)
 
@@ -456,6 +459,14 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 			})
 			return
 		}
+		if err := s.validateTypedValues(reqDTO); err != nil {
+			handleError(s, w, req, &Error{
+				Kind:    ErrorKindValidation,
+				Message: "request type validation failed",
+				Err:     err,
+			})
+			return
+		}
 
 		// Call the handler
 		respDTO, err := handle(ctx, &reqDTO)
@@ -517,6 +528,14 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 			handleError(s, w, req, &Error{
 				Kind:    ErrorKindResponseValidation,
 				Message: "response validation failed",
+				Err:     err,
+			})
+			return
+		}
+		if err := s.validateTypedValues(respDTO); err != nil {
+			handleError(s, w, req, &Error{
+				Kind:    ErrorKindResponseValidation,
+				Message: "response type validation failed",
 				Err:     err,
 			})
 			return
