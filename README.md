@@ -847,8 +847,8 @@ Sprout provides specific error kinds to help you handle different error scenario
 
 | Error Kind | Description | Default Status |
 |------------|-------------|----------------|
-| `ErrorKindParse` | Failed to parse request parameters (query, path, headers) | 400 Bad Request |
-| `ErrorKindValidation` | Request validation failed | 400 Bad Request |
+| `ErrorKindParse` | Malformed JSON or failed to parse request parameters (query, path, headers) | 400 Bad Request |
+| `ErrorKindValidation` | Request validation or JSON body field decode failure | 400 Bad Request |
 | `ErrorKindNotFound` | No route matched the request (404) | 404 Not Found |
 | `ErrorKindMethodNotAllowed` | HTTP method not allowed for route (405) | 405 Method Not Allowed |
 | `ErrorKindResponseValidation` | Response validation failed (internal error) | 500 Internal Server Error |
@@ -880,6 +880,31 @@ if errors.As(err, &sproutErr) {
     }
 }
 ```
+
+#### Field-Aware JSON Body Decoding
+
+For JSON object field decode failures, Sprout produces per-field errors with field paths instead of a body-level parse error:
+
+- **Malformed JSON** (syntax errors, truncated body, top-level shape mismatch) → `ErrorKindParse` with the raw error
+- **Object field decode errors** (custom `UnmarshalJSON` validation failures, field-level type mismatches) → `ErrorKindValidation` with `TypeValidationErrors` containing field paths
+
+The happy path (`json.Unmarshal` succeeds) has zero overhead. The field-aware fallback runs only when the initial decode fails, walking the raw JSON and struct fields to produce granular errors:
+
+```go
+var sproutErr *sprout.Error
+if errors.As(err, &sproutErr) {
+    if sproutErr.Kind == sprout.ErrorKindValidation {
+        var typeErrs sprout.TypeValidationErrors
+        if errors.As(sproutErr.Err, &typeErrs) {
+            for _, e := range typeErrs {
+                log.Printf("Field: %s, Error: %v", e.Field, e.Err)
+            }
+        }
+    }
+}
+```
+
+Response validation uses the same struct tag validators and `TypeValidationFunc` callbacks as request validation, but does not involve a decode step — handlers construct responses in-process.
 
 #### Default Error Handling
 

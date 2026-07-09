@@ -205,6 +205,72 @@ func TestSproutValidationFailure(t *testing.T) {
 	}
 }
 
+func TestRequestValidationReturnsMultipleFieldErrors(t *testing.T) {
+	var capturedErr error
+	router := NewWithConfig(&Config{
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			capturedErr = err
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		},
+	})
+	POST(router, "/users", func(ctx context.Context, req *CreateUserRequest) (*CreateUserResponse, error) {
+		return &CreateUserResponse{
+			ID:    1,
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	})
+
+	// Invalid request with more than one invalid field.
+	reqBody := map[string]any{
+		"name":  "Jo",
+		"email": "not-an-email",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest("POST", "/users", bytes.NewReader(body)))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status BadRequest, got %d", recorder.Code)
+	}
+	bodyText := recorder.Body.String()
+	if !strings.Contains(bodyText, "CreateUserRequest.name") || !strings.Contains(bodyText, "CreateUserRequest.email") {
+		t.Fatalf("expected response body to include both field errors, got %q", bodyText)
+	}
+	if capturedErr == nil {
+		t.Fatal("expected validation error to be captured")
+	}
+
+	var sproutErr *Error
+	if !errors.As(capturedErr, &sproutErr) {
+		t.Fatalf("expected *sprout.Error, got %T", capturedErr)
+	}
+	if sproutErr.Kind != ErrorKindValidation {
+		t.Fatalf("expected validation error kind, got %s", sproutErr.Kind)
+	}
+
+	var validationErrs validator.ValidationErrors
+	if !errors.As(sproutErr.Err, &validationErrs) {
+		t.Fatalf("expected validator.ValidationErrors, got %T", sproutErr.Err)
+	}
+	if len(validationErrs) != 2 {
+		t.Fatalf("expected 2 field errors, got %d: %+v", len(validationErrs), validationErrs)
+	}
+
+	fields := make(map[string]string, len(validationErrs))
+	for _, fe := range validationErrs {
+		fields[fe.Field()] = fe.Tag()
+	}
+
+	if fields["name"] != "min" {
+		t.Errorf("expected name field to fail min validation, got %q", fields["name"])
+	}
+	if fields["email"] != "email" {
+		t.Errorf("expected email field to fail email validation, got %q", fields["email"])
+	}
+}
+
 func TestValidationErrorUsesJSONTagNames(t *testing.T) {
 	type AddressInput struct {
 		StreetName string `json:"street_name" validate:"required"`

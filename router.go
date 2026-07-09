@@ -439,12 +439,8 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 			defer req.Body.Close()
 
 			if len(body) > 0 {
-				if err := json.Unmarshal(body, &reqDTO); err != nil {
-					handleError(s, w, req, &Error{
-						Kind:    ErrorKindParse,
-						Message: "invalid JSON",
-						Err:     err,
-					})
+				if decodeErr := decodeJSONBody(body, &reqDTO); decodeErr != nil {
+					handleError(s, w, req, decodeErr)
 					return
 				}
 			}

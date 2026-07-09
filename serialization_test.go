@@ -2,7 +2,6 @@ package sprout
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -314,17 +313,27 @@ func TestParseErrorStructuredData(t *testing.T) {
 			t.Fatalf("expected *sprout.Error, got %T", capturedErr)
 		}
 
-		// Extract json.UnmarshalTypeError for JSON parse errors
-		var unmarshalErr *json.UnmarshalTypeError
-		if !errors.As(sproutErr.Err, &unmarshalErr) {
-			t.Fatalf("expected *json.UnmarshalTypeError, got %T", sproutErr.Err)
+		// With field-aware decode fallback, JSON body type mismatches now
+		// produce TypeValidationErrors with field context instead of raw
+		// json.UnmarshalTypeError at the parse level.
+		var typeErrs TypeValidationErrors
+		if !errors.As(sproutErr.Err, &typeErrs) {
+			t.Fatalf("expected TypeValidationErrors, got %T", sproutErr.Err)
 		}
-
-		if unmarshalErr.Field != "age" {
-			t.Errorf("expected field 'age', got %q", unmarshalErr.Field)
+		if len(typeErrs) == 0 {
+			t.Fatalf("expected at least one type validation error")
 		}
-		if unmarshalErr.Value != "string" {
-			t.Errorf("expected value 'string', got %q", unmarshalErr.Value)
+		found := false
+		for _, e := range typeErrs {
+			if e.Field == "age" {
+				found = true
+				if e.Value != "string" {
+					t.Errorf("expected value 'string', got %v", e.Value)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("expected field error for 'age', got: %v", typeErrs)
 		}
 	})
 
