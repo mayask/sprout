@@ -398,11 +398,17 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 		// the embedded type's schema instead of creating a duplicate component.
 		// This avoids wrapper types like CreateWalletResponse (embeds
 		// WalletResponse with http:"status=201") generating duplicate schemas.
+		// Error types (4xx/5xx) are excluded because their distinct component
+		// names carry semantic meaning for error discrimination in generated
+		// clients (e.g. Orval produces separate ErrorsBadRequestError types).
 		fields := exportedFields(t)
 		if len(fields) == 1 && fields[0].Anonymous {
 			embeddedType := derefType(fields[0].Type)
 			if embeddedType.Kind() == reflect.Struct && embeddedType != t {
-				return d.schemaRefLocked(embeddedType)
+				status := extractStatusCode(t, http.StatusOK)
+				if status < 400 {
+					return d.schemaRefLocked(embeddedType)
+				}
 			}
 		}
 

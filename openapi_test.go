@@ -920,6 +920,60 @@ func TestEmbeddedStructAliasWithExtraFieldsCreatesComponent(t *testing.T) {
 	}
 }
 
+// testAliasErrorBase is the base error type with code/message fields.
+type testAliasErrorBase struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// testAliasBadRequestError embeds the base with a 4xx status tag and no
+// extra fields. Despite being an embedded-only wrapper, it should keep its
+// own component so Orval can generate distinct error types for catch handlers.
+type testAliasBadRequestError struct {
+	testAliasErrorBase `http:"status=400"`
+}
+
+// testAliasConflictError is another error wrapper with a different status.
+type testAliasConflictError struct {
+	testAliasErrorBase `http:"status=409"`
+}
+
+func (e *testAliasBadRequestError) Error() string { return e.Message }
+func (e *testAliasConflictError) Error() string   { return e.Message }
+
+func TestEmbeddedStructAliasPreservesErrorTypeComponents(t *testing.T) {
+	router := New()
+
+	POST(router, "/error-alias", func(ctx context.Context, req *EmptyRequest) (*testAliasBase, error) {
+		return nil, &testAliasBadRequestError{testAliasErrorBase: testAliasErrorBase{Code: "bad_request", Message: "invalid"}}
+	}, WithErrors(&testAliasBadRequestError{}, &testAliasConflictError{}))
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	var rawDoc openapi3.T
+	if err := json.Unmarshal(specBytes, &rawDoc); err != nil {
+		t.Fatalf("failed to unmarshal raw openapi json: %v", err)
+	}
+
+	// Both error types should have their own components, not collapsed into the base.
+	for _, typ := range []reflect.Type{reflect.TypeOf(testAliasBadRequestError{}), reflect.TypeOf(testAliasConflictError{})} {
+		name := schemaComponentName(typ)
+		ref, ok := rawDoc.Components.Schemas[name]
+		if !ok || ref == nil {
+			t.Fatalf("expected %s component, got schemas %v", name, schemaKeys(rawDoc.Components.Schemas))
+		}
+		if _, exists := ref.Value.Properties["code"]; !exists {
+			t.Fatalf("expected 'code' property on %s", name)
+		}
+		if _, exists := ref.Value.Properties["message"]; !exists {
+			t.Fatalf("expected 'message' property on %s", name)
+		}
+	}
+}
+
 func schemaKeys(schemas openapi3.Schemas) []string {
 	keys := make([]string, 0, len(schemas))
 	for k := range schemas {
