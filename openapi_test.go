@@ -701,6 +701,118 @@ func TestOpenAPISchemaResolverDeduplicatesEnumAcrossComponents(t *testing.T) {
 	}
 }
 
+// --- Embedded struct flattening tests ---
+
+// testEmbeddedBase is a base struct with JSON fields, embedded anonymously
+// by wrapper types that add an http status tag.
+type testEmbeddedBase struct {
+	Code    string `json:"code" validate:"required"`
+	Message string `json:"message" validate:"required"`
+}
+
+// testEmbeddedWrapper embeds testEmbeddedBase with an http tag.
+// The http tag causes shouldExcludeFromJSON to skip the field, but the
+// embedded fields should still be flattened into the OpenAPI schema.
+type testEmbeddedWrapper struct {
+	testEmbeddedBase `http:"status=201"`
+	Extra            string `json:"extra"`
+}
+
+func TestEmbeddedStructFieldsFlattenedInSchema(t *testing.T) {
+	router := New()
+
+	GET(router, "/embedded", func(ctx context.Context, req *EmptyRequest) (*testEmbeddedWrapper, error) {
+		return &testEmbeddedWrapper{
+			testEmbeddedBase: testEmbeddedBase{Code: "OK", Message: "done"},
+			Extra:            "value",
+		}, nil
+	})
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	// Use raw json.Unmarshal to inspect the schema without loader resolving $ref.
+	var rawDoc openapi3.T
+	if err := json.Unmarshal(specBytes, &rawDoc); err != nil {
+		t.Fatalf("failed to unmarshal raw openapi json: %v", err)
+	}
+
+	respRef, ok := rawDoc.Components.Schemas["sprout_testEmbeddedWrapper"]
+	if !ok || respRef == nil {
+		t.Fatalf("expected sprout_testEmbeddedWrapper component, got schemas %v", schemaKeys(rawDoc.Components.Schemas))
+	}
+
+	if respRef.Value == nil {
+		t.Fatalf("expected sprout_testEmbeddedWrapper to have a schema value")
+	}
+
+	// The embedded base fields (code, message) should be flattened into the wrapper.
+	for _, field := range []string{"code", "message", "extra"} {
+		prop, exists := respRef.Value.Properties[field]
+		if !exists || prop == nil {
+			t.Fatalf("expected property %q on testEmbeddedWrapper (flattened from embedded struct), got properties %v", field, respRef.Value.Properties)
+		}
+	}
+
+	// code and message have validate:"required" — they should be in Required.
+	required := make(map[string]bool)
+	for _, r := range respRef.Value.Required {
+		required[r] = true
+	}
+	if !required["code"] {
+		t.Fatalf("expected 'code' in required fields, got %v", respRef.Value.Required)
+	}
+	if !required["message"] {
+		t.Fatalf("expected 'message' in required fields, got %v", respRef.Value.Required)
+	}
+}
+
+// testEmbeddedNoJSONTag embeds a struct without an http tag but also
+// without a json tag. The fields should still be flattened.
+type testEmbeddedNoJSONTag struct {
+	testEmbeddedBase
+	Label string `json:"label"`
+}
+
+func TestEmbeddedStructWithoutHTTPTagFlattenedInSchema(t *testing.T) {
+	router := New()
+
+	GET(router, "/embedded-no-http", func(ctx context.Context, req *EmptyRequest) (*testEmbeddedNoJSONTag, error) {
+		return &testEmbeddedNoJSONTag{
+			testEmbeddedBase: testEmbeddedBase{Code: "OK", Message: "done"},
+			Label:            "test",
+		}, nil
+	})
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	var rawDoc openapi3.T
+	if err := json.Unmarshal(specBytes, &rawDoc); err != nil {
+		t.Fatalf("failed to unmarshal raw openapi json: %v", err)
+	}
+
+	respRef, ok := rawDoc.Components.Schemas["sprout_testEmbeddedNoJSONTag"]
+	if !ok || respRef == nil {
+		t.Fatalf("expected sprout_testEmbeddedNoJSONTag component, got schemas %v", schemaKeys(rawDoc.Components.Schemas))
+	}
+
+	if respRef.Value == nil {
+		t.Fatalf("expected sprout_testEmbeddedNoJSONTag to have a schema value")
+	}
+
+	for _, field := range []string{"code", "message", "label"} {
+		prop, exists := respRef.Value.Properties[field]
+		if !exists || prop == nil {
+			t.Fatalf("expected property %q on testEmbeddedNoJSONTag, got properties %v", field, respRef.Value.Properties)
+		}
+	}
+}
+
 func schemaKeys(schemas openapi3.Schemas) []string {
 	keys := make([]string, 0, len(schemas))
 	for k := range schemas {

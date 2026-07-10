@@ -407,6 +407,30 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 		d.doc.Components.Schemas[name] = &openapi3.SchemaRef{Value: schema}
 
 		for _, field := range exportedFields(t) {
+			// Flatten anonymous embedded struct fields into the parent schema,
+			// mirroring toJSONMap's behavior. This must happen before
+			// shouldExcludeFromJSON because embedded structs often carry
+			// http/status tags that would otherwise hide their fields.
+			if field.Anonymous {
+				embeddedType := derefType(field.Type)
+				if embeddedType.Kind() == reflect.Struct {
+					for _, embeddedField := range exportedFields(embeddedType) {
+						if shouldExcludeFromJSON(embeddedField) {
+							continue
+						}
+						embeddedTagInfo := parseJSONTag(embeddedField)
+						if embeddedTagInfo.Name == "" || isUnwrapField(embeddedField) {
+							continue
+						}
+						schema.Properties[embeddedTagInfo.Name] = d.inlineSchemaRefLocked(embeddedField.Type)
+						if hasRequiredValidation(embeddedField.Tag.Get("validate")) && !embeddedTagInfo.OmitEmpty {
+							schema.Required = append(schema.Required, embeddedTagInfo.Name)
+						}
+					}
+					continue
+				}
+			}
+
 			if shouldExcludeFromJSON(field) {
 				continue
 			}
@@ -519,23 +543,26 @@ func (s *Sprout) OpenAPIYAML() ([]byte, error) {
 	return s.openapi.marshalYAMLLocked()
 }
 
-func derefType(t reflect.Type) reflect.Type {
-	for t != nil && t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	return t
-}
-
 func exportedFields(t reflect.Type) []reflect.StructField {
 	var fields []reflect.StructField
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if field.PkgPath != "" {
+		// Anonymous embedded fields are included even if the embedded type
+		// is unexported — Go's encoding/json promotes the embedded type's
+		// exported fields to the parent, and schema generation must match.
+		if field.PkgPath != "" && !field.Anonymous {
 			continue
 		}
 		fields = append(fields, field)
 	}
 	return fields
+}
+
+func derefType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t
 }
 
 func hasRequiredValidation(tag string) bool {
