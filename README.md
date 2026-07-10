@@ -41,6 +41,8 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 - [Empty Responses](#empty-responses)
 - [OpenAPI & Swagger](#openapi--swagger)
   - [Customizing Metadata](#customizing-metadata)
+  - [Schema Resolver](#schema-resolver)
+  - [Sample Server](#sample-server)
 - [Access to httprouter Features](#access-to-httprouter-features)
 - [Complete Example](#complete-example)
 - [Testing](#testing)
@@ -541,6 +543,80 @@ router := sprout.NewWithConfig(nil, sprout.WithOpenAPIInfo(sprout.OpenAPIInfo{
     },
 }))
 ```
+
+
+### Schema Resolver
+
+Sprout generates OpenAPI schemas automatically from your Go types, but some custom types need explicit schema metadata. Enum types backed by `string`, struct-backed value objects with unexported fields, or domain types from `internal/core` that must not import Sprout—these all need a way to tell the OpenAPI generator what shape they have on the wire.
+
+`OpenAPISchemaResolver` is a pure function that produces a `*openapi3.SchemaRef` for any Go type Sprout encounters during route registration:
+
+```go
+type OpenAPISchemaResolver func(t reflect.Type) *openapi3.SchemaRef
+```
+
+Return `nil` for types the resolver does not handle; Sprout falls back to its built-in generation. The resolver runs only during OpenAPI document construction (route registration), never in the request/response hot path.
+
+#### Registering a resolver
+
+Pass a resolver at construction time:
+
+```go
+router := sprout.NewWithConfig(nil, sprout.WithOpenAPISchemaResolver(myResolver))
+```
+
+Or set one after construction (must be called before route registration):
+
+```go
+router := sprout.New()
+router.RegisterOpenAPISchemaResolver(myResolver)
+```
+
+#### Resolution order
+
+When Sprout encounters a type during route registration, it resolves schemas in this order:
+
+1. **Resolver** — If registered, called first. If it returns a non-nil schema, that schema is used.
+2. **Built-in `time.Time`** — Resolves to `{type: string, format: date-time}` (see below).
+3. **Struct / slice / map / scalar** — Existing auto-generation from exported fields, element types, and Go kinds.
+
+Both `schemaRefLocked` (struct, slice, map paths) and `inlineSchemaRefLocked` (inline scalar paths) consult the resolver, so named scalar types like `type UserStatus string` go through the resolver before falling back to plain string generation.
+
+#### Component promotion and deduplication
+
+For **named types** (`t.Name() != ""`), the resolver's output is promoted to a shared component in `doc.Components.Schemas`. Subsequent encounters of the same type (e.g. an enum type used in multiple response structs) get a `$ref` instead of inlining the schema. This keeps the generated OpenAPI document compact and ensures enum schemas are defined once.
+
+#### Purity constraint
+
+The resolver is called while the OpenAPI document mutex is held. It **must be a pure function**: given the same `reflect.Type`, it must return the same schema (or `nil`). It **must not** call back into Sprout APIs (`RegisterRoute`, `RegisterOpenAPISchemaResolver`, `OpenAPIJSON`, etc.) or it will deadlock.
+
+#### Example: enum types
+
+```go
+func enumResolver(t reflect.Type) *openapi3.SchemaRef {
+    // Check if the type has an Enum() []string method (string-backed enums).
+    if t.Kind() == reflect.String {
+        v := reflect.New(t).Elem().Interface()
+        if e, ok := v.(interface{ Enum() []string }); ok {
+            schema := openapi3.NewStringSchema()
+            schema.Enum = make([]any, 0)
+            for _, val := range e.Enum() {
+                schema.Enum = append(schema.Enum, val)
+            }
+            return &openapi3.SchemaRef{Value: schema}
+        }
+    }
+    return nil
+}
+
+router := sprout.NewWithConfig(nil,
+    sprout.WithOpenAPISchemaResolver(enumResolver),
+)
+```
+
+#### Built-in: `time.Time`
+
+As of the same change that introduced the resolver, `time.Time` is handled as a built-in in `schemaRefLocked` and resolves to `{type: string, format: date-time}`. This replaces the previous behavior of emitting an empty object schema. Applications can override this by returning a non-nil schema for `time.Time` from their resolver—the resolver always takes priority.
 
 The same metadata is available from the `/swagger` endpoint and through `OpenAPIJSON()` / `OpenAPIYAML()`.
 
