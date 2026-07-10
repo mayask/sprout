@@ -27,6 +27,7 @@ type openAPIDocument struct {
 	mu        sync.RWMutex
 	doc       *openapi3.T
 	typeNames map[reflect.Type]string
+	resolver  OpenAPISchemaResolver
 }
 
 // OpenAPIInfo configures high-level OpenAPI document metadata.
@@ -82,7 +83,7 @@ func cloneOpenAPIInfo(info OpenAPIInfo) *OpenAPIInfo {
 	return &clone
 }
 
-func newOpenAPIDocument(info *OpenAPIInfo) *openAPIDocument {
+func newOpenAPIDocument(info *OpenAPIInfo, resolver OpenAPISchemaResolver) *openAPIDocument {
 	components := openapi3.NewComponents()
 	components.Schemas = openapi3.Schemas{}
 
@@ -139,7 +140,54 @@ func newOpenAPIDocument(info *OpenAPIInfo) *openAPIDocument {
 	return &openAPIDocument{
 		doc:       doc,
 		typeNames: make(map[reflect.Type]string),
+		resolver:  resolver,
 	}
+}
+
+func (d *openAPIDocument) setResolver(r OpenAPISchemaResolver) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.resolver = r
+}
+
+// resolvedSchemaRefLocked calls the resolver, if set, to produce a schema for
+// the given type. The caller must already hold d.mu (route registration path).
+// The resolver must be a pure function and MUST NOT call back into Sprout
+// APIs or it will deadlock on d.mu.
+//
+// For named types (t.Name() != ""), the returned inline schema is promoted to
+// a shared component in doc.Components.Schemas and subsequent lookups return a
+// $ref. This mirrors the existing struct-component pattern and avoids inlining
+// the same schema (e.g. a large enum) at every usage site.
+func (d *openAPIDocument) resolvedSchemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
+	if d.resolver == nil {
+		return nil
+	}
+
+	// Return existing component ref for already-promoted named types.
+	if t.Name() != "" {
+		if name, ok := d.typeNames[t]; ok {
+			return openapi3.NewSchemaRef("#/components/schemas/"+name, nil)
+		}
+	}
+
+	schema := d.resolver(t)
+	if schema == nil {
+		return nil
+	}
+
+	// Promote named types to shared components so the schema is defined once.
+	if t.Name() != "" && t.PkgPath() != "" {
+		name := schemaComponentName(t)
+		d.typeNames[t] = name
+		if d.doc.Components.Schemas == nil {
+			d.doc.Components.Schemas = openapi3.Schemas{}
+		}
+		d.doc.Components.Schemas[name] = schema
+		return openapi3.NewSchemaRef("#/components/schemas/"+name, nil)
+	}
+
+	return schema
 }
 
 func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respType reflect.Type, expectedErrors []reflect.Type) {
@@ -312,6 +360,9 @@ func (d *openAPIDocument) inlineSchemaRefLocked(t reflect.Type) *openapi3.Schema
 		return &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()}
 	}
 
+	if schema := d.resolvedSchemaRefLocked(t); schema != nil {
+		return schema
+	}
 	switch t.Kind() {
 	case reflect.Struct, reflect.Slice, reflect.Array, reflect.Map:
 		return d.schemaRefLocked(t)
@@ -326,8 +377,17 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 		return &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()}
 	}
 
+	if schema := d.resolvedSchemaRefLocked(t); schema != nil {
+		return schema
+	}
 	switch t.Kind() {
 	case reflect.Struct:
+		// Built-in: time.Time serializes as an RFC 3339 string, not an object.
+		if t.PkgPath() == "time" && t.Name() == "Time" {
+			schema := openapi3.NewStringSchema()
+			schema.Format = "date-time"
+			return &openapi3.SchemaRef{Value: schema}
+		}
 		if unwrapType, ok := unwrapJSONFieldType(t); ok {
 			return d.schemaRefLocked(unwrapType)
 		}
@@ -398,12 +458,6 @@ func (d *openAPIDocument) scalarSchemaRef(t reflect.Type) *openapi3.SchemaRef {
 	case reflect.Float64:
 		return &openapi3.SchemaRef{Value: openapi3.NewFloat64Schema()}
 	default:
-		// Special handling for time.Time
-		if t.PkgPath() == "time" && t.Name() == "Time" {
-			schema := openapi3.NewStringSchema()
-			schema.Format = "date-time"
-			return &openapi3.SchemaRef{Value: schema}
-		}
 		return &openapi3.SchemaRef{Value: openapi3.NewStringSchema()}
 	}
 }

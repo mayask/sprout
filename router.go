@@ -51,7 +51,8 @@ type Config struct {
 	// Leading and trailing slashes are handled automatically.
 	BasePath string
 
-	openapiInfo *OpenAPIInfo
+	openapiInfo     *OpenAPIInfo
+	openapiResolver OpenAPISchemaResolver
 }
 
 // Option mutates router configuration before the Sprout instance is constructed.
@@ -98,7 +99,7 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 		Router:         httprouter.New(),
 		validate:       validate,
 		config:         config,
-		openapi:        newOpenAPIDocument(config.openapiInfo),
+		openapi:        newOpenAPIDocument(config.openapiInfo, config.openapiResolver),
 		order:          &orderSeq{},
 		registry:       registry,
 		typeValidators: newTypeValidationRegistry(),
