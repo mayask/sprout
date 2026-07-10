@@ -392,6 +392,20 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 			return d.schemaRefLocked(unwrapType)
 		}
 
+		// Alias optimization: if the struct has only one anonymous embedded
+		// struct field and no extra named fields, it serializes identically to
+		// the embedded type (Go's encoding/json flattens). Return a $ref to
+		// the embedded type's schema instead of creating a duplicate component.
+		// This avoids wrapper types like CreateWalletResponse (embeds
+		// WalletResponse with http:"status=201") generating duplicate schemas.
+		fields := exportedFields(t)
+		if len(fields) == 1 && fields[0].Anonymous {
+			embeddedType := derefType(fields[0].Type)
+			if embeddedType.Kind() == reflect.Struct && embeddedType != t {
+				return d.schemaRefLocked(embeddedType)
+			}
+		}
+
 		if ref, ok := d.typeNames[t]; ok {
 			return openapi3.NewSchemaRef("#/components/schemas/"+ref, nil)
 		}

@@ -813,6 +813,113 @@ func TestEmbeddedStructWithoutHTTPTagFlattenedInSchema(t *testing.T) {
 	}
 }
 
+// --- Embedded struct alias optimization tests ---
+
+// testAliasBase is the base response with real fields.
+type testAliasBase struct {
+	ID     string `json:"id" validate:"required"`
+	Status string `json:"status" validate:"required"`
+}
+
+// testAliasWrapper embeds testAliasBase with an http status tag and adds
+// NO extra fields. It should produce a $ref to testAliasBase, not a new
+// component with inlined fields.
+type testAliasWrapper struct {
+	testAliasBase `http:"status=201"`
+}
+
+// testAliasWrapperWithExtra embeds testAliasBase with an http status tag
+// AND adds an extra field. It should produce its own component with
+// flattened fields.
+type testAliasWrapperWithExtra struct {
+	testAliasBase `http:"status=201"`
+	Note          string `json:"note"`
+}
+
+func TestEmbeddedStructAliasReusesBaseComponent(t *testing.T) {
+	router := New()
+
+	POST(router, "/alias", func(ctx context.Context, req *EmptyRequest) (*testAliasWrapper, error) {
+		return &testAliasWrapper{testAliasBase: testAliasBase{ID: "1", Status: "ok"}}, nil
+	})
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	var rawDoc openapi3.T
+	if err := json.Unmarshal(specBytes, &rawDoc); err != nil {
+		t.Fatalf("failed to unmarshal raw openapi json: %v", err)
+	}
+
+	// The wrapper should NOT have its own component — it should reuse the base.
+	wrapperName := schemaComponentName(reflect.TypeOf(testAliasWrapper{}))
+	if _, exists := rawDoc.Components.Schemas[wrapperName]; exists {
+		t.Fatalf("did not expect %s component (should reuse base), got schemas %v", wrapperName, schemaKeys(rawDoc.Components.Schemas))
+	}
+
+	// The base type should have a component.
+	baseName := schemaComponentName(reflect.TypeOf(testAliasBase{}))
+	baseRef, ok := rawDoc.Components.Schemas[baseName]
+	if !ok || baseRef == nil {
+		t.Fatalf("expected %s component, got schemas %v", baseName, schemaKeys(rawDoc.Components.Schemas))
+	}
+	if baseRef.Value == nil || len(baseRef.Value.Properties) != 2 {
+		t.Fatalf("expected base component with 2 properties, got %+v", baseRef.Value)
+	}
+
+	// The POST response schema should be a $ref to the base component.
+	pathItem := rawDoc.Paths.Value("/alias")
+	if pathItem == nil || pathItem.Post == nil {
+		t.Fatalf("expected POST /alias in spec")
+	}
+	resp := pathItem.Post.Responses.Value("201")
+	if resp == nil || resp.Value == nil {
+		t.Fatalf("expected 201 response in spec")
+	}
+	media := resp.Value.Content["application/json"]
+	if media == nil || media.Schema == nil {
+		t.Fatalf("expected application/json schema in 201 response")
+	}
+	if media.Schema.Ref != "#/components/schemas/"+baseName {
+		t.Fatalf("expected response schema to be $ref to %s, got Ref=%q", baseName, media.Schema.Ref)
+	}
+}
+
+func TestEmbeddedStructAliasWithExtraFieldsCreatesComponent(t *testing.T) {
+	router := New()
+
+	POST(router, "/alias-extra", func(ctx context.Context, req *EmptyRequest) (*testAliasWrapperWithExtra, error) {
+		return &testAliasWrapperWithExtra{testAliasBase: testAliasBase{ID: "1", Status: "ok"}, Note: "extra"}, nil
+	})
+
+	specBytes, err := router.OpenAPIJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal openapi json: %v", err)
+	}
+
+	var rawDoc openapi3.T
+	if err := json.Unmarshal(specBytes, &rawDoc); err != nil {
+		t.Fatalf("failed to unmarshal raw openapi json: %v", err)
+	}
+
+	// The wrapper with extra fields SHOULD have its own component.
+	wrapperName := schemaComponentName(reflect.TypeOf(testAliasWrapperWithExtra{}))
+	wrapperRef, ok := rawDoc.Components.Schemas[wrapperName]
+	if !ok || wrapperRef == nil {
+		t.Fatalf("expected %s component (has extra fields), got schemas %v", wrapperName, schemaKeys(rawDoc.Components.Schemas))
+	}
+
+	// It should have flattened fields from the base plus the extra field.
+	for _, field := range []string{"id", "status", "note"} {
+		prop, exists := wrapperRef.Value.Properties[field]
+		if !exists || prop == nil {
+			t.Fatalf("expected property %q on %s, got properties %v", field, wrapperName, wrapperRef.Value.Properties)
+		}
+	}
+}
+
 func schemaKeys(schemas openapi3.Schemas) []string {
 	keys := make([]string, 0, len(schemas))
 	for k := range schemas {
