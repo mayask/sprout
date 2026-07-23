@@ -278,14 +278,10 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 		return nil, nil
 	}
 
-	explicitBody, err := findRequestBodyField(reqType)
-	if err != nil {
-		panic(err)
-	}
-
 	var params openapi3.Parameters
 	var bodyRequired bool
 	var hasBody bool
+
 	for _, field := range exportedFields(reqType) {
 		switch {
 		case field.Tag.Get("path") != "":
@@ -296,8 +292,6 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 		case field.Tag.Get("header") != "":
 			required := hasRequiredValidation(field.Tag.Get("validate"))
 			params = append(params, d.parameterFromFieldLocked(field, "header", field.Tag.Get("header"), required))
-		case hasBodyTag(field):
-			continue
 		default:
 			if shouldExcludeFromJSON(field) {
 				continue
@@ -327,18 +321,6 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 		})
 	}
 
-	if explicitBody != nil {
-		return params, &openapi3.RequestBodyRef{
-			Value: &openapi3.RequestBody{
-				Required: explicitBody.required,
-				Content: openapi3.Content{
-					explicitBody.contentType: &openapi3.MediaType{
-						Schema: d.schemaRefLocked(explicitBody.fieldType),
-					},
-				},
-			},
-		}
-	}
 	if !hasBody {
 		return params, nil
 	}
@@ -393,11 +375,6 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 	t = derefType(t)
 	if t == nil {
 		return &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()}
-	}
-	if t == streamBodyType {
-		schema := openapi3.NewStringSchema()
-		schema.Format = "binary"
-		return &openapi3.SchemaRef{Value: schema}
 	}
 
 	if schema := d.resolvedSchemaRefLocked(t); schema != nil {
