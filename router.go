@@ -182,14 +182,23 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	bodyField, err := findRequestBodyField(typeOf[Req]())
+	requestBody, err := findRequestBodyField(typeOf[Req]())
 	if err != nil {
 		panic(err)
 	}
-	if bodyField != nil && cfg.rawRequestBody {
+	if requestBody != nil && cfg.rawRequestBody {
 		panic("sprout: explicit body field cannot be combined with WithRawRequest")
 	}
-	cfg.requestBody = bodyField
+	responseBody, err := findRequestBodyField(typeOf[Resp]())
+	if err != nil {
+		panic(err)
+	}
+	if responseBody != nil && !isFileBodyType(responseBody.fieldType) {
+		panic("sprout: explicit response body fields currently require *FileBody")
+	}
+	cfg.requestBody = requestBody
+	cfg.responseBody = responseBody
+
 	// Prepend base path if configured
 	fullPath := joinPath(s.config.BasePath, path)
 
@@ -284,6 +293,7 @@ type routeConfig struct {
 	rawRequestBody   bool
 	requestBodyLimit int64
 	requestBody      *requestBodyField
+	responseBody     *requestBodyField
 }
 
 // WithErrors registers expected error types for validation and documentation
@@ -504,6 +514,9 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 
 		// Call the handler
 		respDTO, err := handle(ctx, &reqDTO)
+		if cleanup := explicitResponseBodyCleanup(respDTO, cfg.responseBody); cleanup != nil {
+			defer cleanup()
+		}
 		if err != nil {
 			if errors.Is(err, ErrNext) {
 				next(nil)
@@ -587,6 +600,13 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		// Set custom headers from struct tags
 		for name, value := range customHeaders {
 			w.Header().Set(name, value)
+		}
+
+		if handled, bodyErr := writeExplicitResponseBody(w, req, respDTO, cfg.responseBody, statusCode); bodyErr != nil {
+			handleError(s, w, req, bodyErr)
+			return
+		} else if handled {
+			return
 		}
 
 		// Set Content-Type to application/json if not already set

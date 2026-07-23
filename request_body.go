@@ -23,6 +23,8 @@ type requestBodyField struct {
 
 var streamBodyPtrType = reflect.TypeFor[*StreamBody]()
 var streamBodyType = reflect.TypeFor[StreamBody]()
+var fileBodyPtrType = reflect.TypeFor[*FileBody]()
+var fileBodyType = reflect.TypeFor[FileBody]()
 
 func findRequestBodyField(reqType reflect.Type) (*requestBodyField, error) {
 	reqType = derefType(reqType)
@@ -51,8 +53,11 @@ func findRequestBodyField(reqType reflect.Type) (*requestBodyField, error) {
 		if err != nil {
 			return nil, fmt.Errorf("request body field %s has invalid contentType %q: %w", field.Name, contentType, err)
 		}
-		if field.Type == streamBodyType {
-			return nil, fmt.Errorf("request body field %s must use *StreamBody, not StreamBody", field.Name)
+		switch field.Type {
+		case streamBodyType:
+			return nil, fmt.Errorf("body field %s must use *StreamBody, not StreamBody", field.Name)
+		case fileBodyType:
+			return nil, fmt.Errorf("body field %s must use *FileBody, not FileBody", field.Name)
 		}
 
 		result = &requestBodyField{
@@ -72,6 +77,10 @@ func isStreamBodyType(t reflect.Type) bool {
 func hasBodyTag(field reflect.StructField) bool {
 	_, ok := field.Tag.Lookup("body")
 	return ok
+}
+
+func isFileBodyType(t reflect.Type) bool {
+	return t == fileBodyPtrType
 }
 
 type prefixedReadCloser struct {

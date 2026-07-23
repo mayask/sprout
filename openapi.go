@@ -201,14 +201,23 @@ func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respTy
 	defer d.mu.Unlock()
 
 	parameters, requestBody := d.buildRequestArtifactsLocked(reqType)
+	responseBody, err := findRequestBodyField(respType)
+	if err != nil {
+		panic(err)
+	}
 	successStatus := extractStatusCode(respType, http.StatusOK)
+	successContentType := "application/json"
 	successSchema := d.schemaRefLocked(respType)
+	if responseBody != nil {
+		successContentType = responseBody.contentType
+		successSchema = d.schemaRefLocked(responseBody.fieldType)
+	}
 
 	responses := openapi3.NewResponses()
 
 	successResponse := openapi3.NewResponse().WithDescription("Successful response")
 	successResponse.Content = openapi3.Content{
-		"application/json": &openapi3.MediaType{
+		successContentType: &openapi3.MediaType{
 			Schema: successSchema,
 		},
 	}
@@ -394,7 +403,7 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 	if t == nil {
 		return &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()}
 	}
-	if t == streamBodyType {
+	if t == streamBodyType || t == fileBodyType {
 		schema := openapi3.NewStringSchema()
 		schema.Format = "binary"
 		return &openapi3.SchemaRef{Value: schema}
