@@ -25,6 +25,7 @@ type Sprout struct {
 	order          *orderSeq
 	registry       *routerRegistry
 	typeValidators *typeValidationRegistry
+	bodyDecoders   *requestBodyDecoderRegistry
 
 	mwMu        sync.RWMutex
 	middlewares []middlewareLayer
@@ -103,6 +104,7 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 		order:          &orderSeq{},
 		registry:       registry,
 		typeValidators: newTypeValidationRegistry(),
+		bodyDecoders:   newRequestBodyDecoderRegistry(),
 	}
 	registry.add(s)
 
@@ -239,6 +241,7 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 		order:          s.order,
 		registry:       s.registry,
 		typeValidators: s.typeValidators,
+		bodyDecoders:   s.bodyDecoders,
 	}
 	s.registry.add(child)
 
@@ -448,7 +451,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		}
 
 		if cfg.requestBody != nil {
-			cleanup, bindErr := bindRequestBody(w, req, reqValue, cfg.requestBody, cfg.requestBodyLimit)
+			cleanup, bindErr := bindRequestBody(ctx, s, w, req, reqValue, cfg.requestBody, cfg.requestBodyLimit)
 			if cleanup != nil {
 				defer cleanup()
 			}
