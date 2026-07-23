@@ -13,6 +13,7 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
   - [Headers](#headers)
   - [Request Body](#request-body)
     - [Nested Objects in Request Body](#nested-objects-in-request-body)
+    - [Streaming Request Bodies](#streaming-request-bodies)
   - [Combining Multiple Sources](#combining-multiple-sources)
 - [Validation](#validation)
   - [Common Validation Tags](#common-validation-tags)
@@ -199,6 +200,38 @@ sprout.POST(router, "/uploads", func(ctx context.Context, req *UploadRequest) (*
     return &UploadResponse{Status: "ok"}, nil
 }, sprout.WithRawRequest())
 ```
+
+#### Streaming Request Bodies
+
+Use an explicit `body` field with `*sprout.StreamBody` when the handler must
+consume a large body incrementally without pre-reading, buffering, or temporary
+files. The `contentType` tag drives both runtime validation and the generated
+OpenAPI request body. Path, query, and header fields are populated and validated
+before the handler receives the live stream.
+
+```go
+type CSVUploadRequest struct {
+    Column *int `query:"column" validate:"required,gte=0"`
+
+    Body *sprout.StreamBody `body:"" contentType:"text/csv" validate:"required"`
+}
+
+sprout.POST(router, "/uploads", func(ctx context.Context, req *CSVUploadRequest) (*UploadResponse, error) {
+    // req.Body is the original live request stream. Process it incrementally.
+    rows := csv.NewReader(req.Body)
+    // ... read rows ...
+    return &UploadResponse{Status: "ok"}, nil
+}, sprout.WithRequestBodyLimit(1<<30))
+```
+
+Sprout closes the stream after the handler returns. `Close` is idempotent, so a
+handler may close it explicitly when returning early. `WithRequestBodyLimit`
+wraps the body in `http.MaxBytesReader`; reads beyond the limit return
+`*http.MaxBytesError`.
+
+The generated OpenAPI operation declares the configured media type with a
+`string`/`binary` schema. An explicit `body` field cannot be combined with
+`WithRawRequest()`.
 
 #### Nested Objects in Request Body
 
