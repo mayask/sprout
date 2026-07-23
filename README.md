@@ -229,23 +229,6 @@ handler may close it explicitly when returning early. `WithRequestBodyLimit`
 wraps the body in `http.MaxBytesReader`; reads beyond the limit return
 `*http.MaxBytesError`.
 
-Consuming body formats can be added through the decoder registry. Decoders
-receive the request context, a body reader, parsed Content-Type parameters, and
-the target value. They may return cleanup for multipart temporary files or
-other resources. JSON is registered by default; `StreamBody` bypasses this
-registry because it must remain unread until the handler.
-
-```go
-router.RegisterRequestBodyDecoder("application/xml", func(
-    ctx context.Context,
-    body io.Reader,
-    params map[string]string,
-    target any,
-) (cleanup func() error, err *sprout.Error) {
-    // Decode body into target, then return optional cleanup.
-})
-```
-
 The generated OpenAPI operation declares the configured media type with a
 `string`/`binary` schema. An explicit `body` field cannot be combined with
 `WithRawRequest()`.

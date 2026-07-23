@@ -1,9 +1,8 @@
 package sprout
 
 import (
-	"context"
-	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"reflect"
@@ -70,8 +69,6 @@ func hasBodyTag(field reflect.StructField) bool {
 }
 
 func bindRequestBody(
-	ctx context.Context,
-	s *Sprout,
 	w http.ResponseWriter,
 	req *http.Request,
 	reqValue reflect.Value,
@@ -86,7 +83,7 @@ func bindRequestBody(
 		return nil, nil
 	}
 
-	mediaType, mediaParams, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
 	if err != nil || mediaType == "" {
 		return req.Body.Close, &Error{Kind: ErrorKindParse, Message: "invalid request content type", Err: err}
 	}
@@ -112,12 +109,19 @@ func bindRequestBody(
 		return stream.Close, nil
 	}
 
-	decoder := s.bodyDecoders.get(mediaType)
-	if decoder == nil {
+	if mediaType != defaultRequestContentType {
 		return req.Body.Close, &Error{
 			Kind:    ErrorKindParse,
 			Message: fmt.Sprintf("no request body decoder registered for content type %q", mediaType),
 		}
+	}
+
+	body, readErr := io.ReadAll(req.Body)
+	if readErr != nil {
+		return req.Body.Close, &Error{Kind: ErrorKindParse, Message: "failed to read request body", Err: readErr}
+	}
+	if len(body) == 0 {
+		return req.Body.Close, nil
 	}
 
 	var target any
@@ -129,23 +133,8 @@ func bindRequestBody(
 	} else {
 		target = fieldValue.Addr().Interface()
 	}
-
-	decoderCleanup, decodeErr := decoder(ctx, req.Body, mediaParams, target)
-	cleanup := combineRequestBodyCleanup(decoderCleanup, req.Body.Close)
-	return cleanup, decodeErr
-}
-
-func combineRequestBodyCleanup(cleanups ...func() error) func() error {
-	return func() error {
-		var errs []error
-		for _, cleanup := range cleanups {
-			if cleanup == nil {
-				continue
-			}
-			if err := cleanup(); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		return errors.Join(errs...)
+	if decodeErr := decodeJSONBody(body, target); decodeErr != nil {
+		return req.Body.Close, decodeErr
 	}
+	return req.Body.Close, nil
 }
