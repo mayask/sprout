@@ -25,6 +25,7 @@ type Sprout struct {
 	order          *orderSeq
 	registry       *routerRegistry
 	typeValidators *typeValidationRegistry
+	bodyDecoders   *requestBodyDecoderRegistry
 
 	mwMu        sync.RWMutex
 	middlewares []middlewareLayer
@@ -103,6 +104,7 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 		order:          &orderSeq{},
 		registry:       registry,
 		typeValidators: newTypeValidationRegistry(),
+		bodyDecoders:   newRequestBodyDecoderRegistry(),
 	}
 	registry.add(s)
 
@@ -180,7 +182,14 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	for _, opt := range opts {
 		opt(cfg)
 	}
-
+	bodyField, err := findRequestBodyField(typeOf[Req]())
+	if err != nil {
+		panic(err)
+	}
+	if bodyField != nil && cfg.rawRequestBody {
+		panic("sprout: explicit body field cannot be combined with WithRawRequest")
+	}
+	cfg.requestBody = bodyField
 	// Prepend base path if configured
 	fullPath := joinPath(s.config.BasePath, path)
 
@@ -232,6 +241,7 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 		order:          s.order,
 		registry:       s.registry,
 		typeValidators: s.typeValidators,
+		bodyDecoders:   s.bodyDecoders,
 	}
 	s.registry.add(child)
 
@@ -269,9 +279,11 @@ type RouteOption func(*routeConfig)
 
 // routeConfig holds configuration for a route
 type routeConfig struct {
-	expectedErrors []reflect.Type
-	middlewares    []Middleware
-	rawRequestBody bool
+	expectedErrors   []reflect.Type
+	middlewares      []Middleware
+	rawRequestBody   bool
+	requestBodyLimit int64
+	requestBody      *requestBodyField
 }
 
 // WithErrors registers expected error types for validation and documentation
@@ -308,10 +320,22 @@ func WithRawRequest() RouteOption {
 	}
 }
 
+// WithRequestBodyLimit caps bytes read from the request body for this route.
+// A non-positive limit leaves the body unbounded for backward compatibility.
+func WithRequestBodyLimit(maxBytes int64) RouteOption {
+	return func(cfg *routeConfig) {
+		cfg.requestBodyLimit = maxBytes
+	}
+}
+
 // setFieldValue sets a reflect.Value from a string value, handling type conversion
 func setFieldValue(fieldValue reflect.Value, value string) error {
 	if value == "" {
 		return nil // Skip empty values
+	}
+	if fieldValue.Kind() == reflect.Pointer {
+		fieldValue.Set(reflect.New(fieldValue.Type().Elem()))
+		return setFieldValue(fieldValue.Elem(), value)
 	}
 
 	switch fieldValue.Kind() {
@@ -426,8 +450,21 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 			}
 		}
 
-		// Parse JSON body into struct (excluding tagged fields)
-		if !cfg.rawRequestBody && req.Body != nil && req.ContentLength > 0 {
+		if cfg.requestBody != nil {
+			cleanup, bindErr := bindRequestBody(ctx, s, w, req, reqValue, cfg.requestBody, cfg.requestBodyLimit)
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if bindErr != nil {
+				handleError(s, w, req, bindErr)
+				return
+			}
+		} else if !cfg.rawRequestBody && req.Body != nil && req.ContentLength > 0 {
+			// Legacy implicit JSON body handling. Explicit body fields use the
+			// contentType tag and body binding path above.
+			if cfg.requestBodyLimit > 0 {
+				req.Body = http.MaxBytesReader(w, req.Body, cfg.requestBodyLimit)
+			}
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				handleError(s, w, req, &Error{
