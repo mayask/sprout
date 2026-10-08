@@ -521,14 +521,42 @@ func (d *openAPIDocument) parameterFromFieldLocked(field reflect.StructField, lo
 		name = field.Name
 	}
 
-	return &openapi3.ParameterRef{
-		Value: &openapi3.Parameter{
-			Name:     name,
-			In:       location,
-			Required: required || location == "path",
-			Schema:   d.inlineSchemaRefLocked(field.Type),
-		},
+	param := &openapi3.Parameter{
+		Name:     name,
+		In:       location,
+		Required: required || location == "path",
+		Schema:   d.paramSchemaRefLocked(field.Type),
 	}
+	if location == "query" && field.Tag.Get("explode") == "false" {
+		if t := derefType(field.Type); t.Kind() == reflect.Slice && !isTextUnmarshaler(t) {
+			explode := false
+			param.Style = openapi3.SerializationForm
+			param.Explode = &explode
+		}
+	}
+	return &openapi3.ParameterRef{Value: param}
+}
+
+// paramSchemaRefLocked mirrors how setFieldValue parses path, query, and
+// header values: the resolver wins, encoding.TextUnmarshaler types are
+// strings, and slices hold parameter-shaped items.
+func (d *openAPIDocument) paramSchemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
+	t = derefType(t)
+	if schema := d.resolvedSchemaRefLocked(t); schema != nil {
+		return schema
+	}
+	if t.PkgPath() == "time" && t.Name() == "Time" {
+		return d.schemaRefLocked(t)
+	}
+	if isTextUnmarshaler(t) {
+		return &openapi3.SchemaRef{Value: openapi3.NewStringSchema()}
+	}
+	if t.Kind() == reflect.Slice {
+		schema := openapi3.NewArraySchema()
+		schema.Items = d.paramSchemaRefLocked(t.Elem())
+		return &openapi3.SchemaRef{Value: schema}
+	}
+	return d.inlineSchemaRefLocked(t)
 }
 
 func (d *openAPIDocument) inlineSchemaRefLocked(t reflect.Type) *openapi3.SchemaRef {

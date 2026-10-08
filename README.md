@@ -152,6 +152,27 @@ sprout.GET(router, "/search", func(ctx context.Context, req *SearchRequest) (*Se
 })
 ```
 
+#### Array query parameters
+
+Slice fields collect every occurrence of their key, in order. This is the OpenAPI default (`style: form`, `explode: true`):
+
+```go
+type ListPaymentsRequest struct {
+    // /payments?wallet_ids=a&wallet_ids=b
+    WalletIDs []string `query:"wallet_ids" validate:"omitempty,max=20,dive,uuid"`
+
+    // /payments?currencies=GBP,EUR (repeated keys are accepted too)
+    Currencies []string `query:"currencies" explode:"false"`
+}
+```
+
+- Elements use the same conversion as scalar parameters, including named types and `encoding.TextUnmarshaler`.
+- Add `explode:"false"` to also split each occurrence on commas. The generated OpenAPI parameter then declares `style: form, explode: false`. Without it, commas are part of the value.
+- Empty items are skipped. A slice with no items stays `nil`; use `*[]T` to tell "absent" from "present".
+- Validation runs on the whole slice (`max=20`) and, with `dive`, on each element (errors name `WalletIDs[0]`).
+- Non-slice fields keep using the first occurrence of a repeated key.
+- Bracket keys such as `wallet_ids[]=a` (axios' default array format) are not recognized. Configure the client to repeat plain keys, e.g. axios `paramsSerializer: { indexes: null }`.
+
 ### Headers
 
 Validate HTTP headers:
@@ -741,6 +762,10 @@ Query parameters, path parameters, and headers are automatically converted from 
 | `uint`, `uint8`, `uint16`, `uint32`, `uint64` | ✅ |
 | `float32`, `float64` | ✅ |
 | `bool` | ✅ |
+| Types implementing `encoding.TextUnmarshaler` (e.g. `time.Time` as RFC 3339, `uuid.UUID`, `netip.Addr`) | ✅ |
+| Slices of the above (query parameters only) | ✅ — see [Array query parameters](#array-query-parameters) |
+
+Named types (`type Status string`) convert like their underlying kind. When a type implements `encoding.TextUnmarshaler`, `UnmarshalText` takes precedence over kind-based conversion, as in `encoding/json`, and its error becomes a parse error. Such types are documented as `type: string` in OpenAPI (`time.Time` as `format: date-time`) unless a schema resolver provides a schema.
 
 ## Error Handling
 

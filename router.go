@@ -2,11 +2,13 @@ package sprout
 
 import (
 	"context"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -363,7 +365,16 @@ func WithRequestBodyLimit(maxBytes int64) RouteOption {
 	}
 }
 
-// setFieldValue sets a reflect.Value from a string value, handling type conversion
+var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+
+// isTextUnmarshaler reports whether *t implements encoding.TextUnmarshaler.
+func isTextUnmarshaler(t reflect.Type) bool {
+	return reflect.PointerTo(t).Implements(textUnmarshalerType)
+}
+
+// setFieldValue sets a reflect.Value from a string value, handling type
+// conversion. Types implementing encoding.TextUnmarshaler take precedence over
+// kind-based conversion, as in encoding/json.
 func setFieldValue(fieldValue reflect.Value, value string) error {
 	if value == "" {
 		return nil // Skip empty values
@@ -371,6 +382,9 @@ func setFieldValue(fieldValue reflect.Value, value string) error {
 	if fieldValue.Kind() == reflect.Pointer {
 		fieldValue.Set(reflect.New(fieldValue.Type().Elem()))
 		return setFieldValue(fieldValue.Elem(), value)
+	}
+	if isTextUnmarshaler(fieldValue.Type()) {
+		return fieldValue.Addr().Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(value))
 	}
 
 	switch fieldValue.Kind() {
@@ -407,6 +421,54 @@ func setFieldValue(fieldValue reflect.Value, value string) error {
 	return nil
 }
 
+// setQueryFieldValue binds every occurrence of a query key. Slice fields (or
+// pointers to slices) collect all occurrences in order; with csv, each
+// occurrence is also split on commas. Empty items are skipped, matching scalar
+// handling, and a field with no items stays nil. Other fields use the first
+// occurrence. On failure it returns the offending raw value.
+func setQueryFieldValue(fieldValue reflect.Value, values []string, csv bool) (string, error) {
+	target := fieldValue.Type()
+	isPtr := target.Kind() == reflect.Pointer
+	if isPtr {
+		target = target.Elem()
+	}
+	if target.Kind() != reflect.Slice || isTextUnmarshaler(target) {
+		first := ""
+		if len(values) > 0 {
+			first = values[0]
+		}
+		return first, setFieldValue(fieldValue, first)
+	}
+
+	slice := reflect.MakeSlice(target, 0, len(values))
+	for _, raw := range values {
+		items := []string{raw}
+		if csv {
+			items = strings.Split(raw, ",")
+		}
+		for _, item := range items {
+			if item == "" {
+				continue
+			}
+			elem := reflect.New(target.Elem()).Elem()
+			if err := setFieldValue(elem, item); err != nil {
+				return item, err
+			}
+			slice = reflect.Append(slice, elem)
+		}
+	}
+	if slice.Len() == 0 {
+		return "", nil
+	}
+	if isPtr {
+		ptr := reflect.New(target)
+		ptr.Elem().Set(slice)
+		slice = ptr
+	}
+	fieldValue.Set(slice)
+	return "", nil
+}
+
 func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *routeConfig) Middleware {
 	return func(w http.ResponseWriter, req *http.Request, next Next) {
 		s := entry.owner
@@ -417,6 +479,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		reqValue := reflect.ValueOf(&reqDTO).Elem()
 		reqType := reqValue.Type()
 		params := Params(req)
+		var query url.Values // parsed on first query field
 
 		// Iterate through struct fields and populate from different sources
 		for i := 0; i < reqType.NumField(); i++ {
@@ -450,15 +513,18 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 
 			// Handle query parameters
 			if queryTag := field.Tag.Get("query"); queryTag != "" {
-				queryValue := req.URL.Query().Get(queryTag)
-				if err := setFieldValue(fieldValue, queryValue); err != nil {
+				if query == nil {
+					query = req.URL.Query()
+				}
+				badValue, err := setQueryFieldValue(fieldValue, query[queryTag], field.Tag.Get("explode") == "false")
+				if err != nil {
 					handleError(s, w, req, &Error{
 						Kind:    ErrorKindParse,
 						Message: fmt.Sprintf("invalid query parameter '%s'", queryTag),
 						Err: &ParseParameterError{
 							Parameter: queryTag,
 							Source:    ParameterSourceQuery,
-							Value:     queryValue,
+							Value:     badValue,
 							Err:       err,
 						},
 					})
