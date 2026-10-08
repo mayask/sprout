@@ -24,10 +24,21 @@ func typeOf[T any]() reflect.Type {
 }
 
 type openAPIDocument struct {
-	mu        sync.RWMutex
-	doc       *openapi3.T
-	typeNames map[reflect.Type]string
-	resolver  OpenAPISchemaResolver
+	mu         sync.RWMutex
+	doc        *openapi3.T
+	components map[reflect.Type]*schemaComponent
+	resolver   OpenAPISchemaResolver
+}
+
+// schemaComponent tracks a generated component and every $ref pointing at it,
+// so the component can be renamed when a later type makes its name ambiguous.
+type schemaComponent struct {
+	// candidates lists names of increasing package-path depth; see
+	// componentNameCandidates.
+	candidates []string
+	name       string
+	schema     *openapi3.SchemaRef
+	refs       []*openapi3.SchemaRef
 }
 
 // OpenAPIInfo configures high-level OpenAPI document metadata.
@@ -64,6 +75,19 @@ type OpenAPIServer struct {
 func WithOpenAPIInfo(info OpenAPIInfo) Option {
 	return func(cfg *Config) {
 		cfg.openapiInfo = cloneOpenAPIInfo(info)
+	}
+}
+
+// WithOpenAPIDocument gives a mounted router its own OpenAPI document with the
+// supplied metadata. Routes registered on the mount and its descendants go to
+// that document only, and Mount(...).OpenAPIJSON/OpenAPIYAML export it. The
+// document starts with the parent's schema resolver unless
+// WithOpenAPISchemaResolver is also passed. The document is not served over
+// HTTP automatically. On NewWithConfig it is equivalent to WithOpenAPIInfo.
+func WithOpenAPIDocument(info OpenAPIInfo) Option {
+	return func(cfg *Config) {
+		cfg.openapiInfo = cloneOpenAPIInfo(info)
+		cfg.openapiDocument = true
 	}
 }
 
@@ -138,9 +162,9 @@ func newOpenAPIDocument(info *OpenAPIInfo, resolver OpenAPISchemaResolver) *open
 	}
 
 	return &openAPIDocument{
-		doc:       doc,
-		typeNames: make(map[reflect.Type]string),
-		resolver:  resolver,
+		doc:        doc,
+		components: make(map[reflect.Type]*schemaComponent),
+		resolver:   resolver,
 	}
 }
 
@@ -148,6 +172,15 @@ func (d *openAPIDocument) setResolver(r OpenAPISchemaResolver) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.resolver = r
+}
+
+func (d *openAPIDocument) currentResolver() OpenAPISchemaResolver {
+	if d == nil {
+		return nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.resolver
 }
 
 // resolvedSchemaRefLocked calls the resolver, if set, to produce a schema for
@@ -166,8 +199,8 @@ func (d *openAPIDocument) resolvedSchemaRefLocked(t reflect.Type) *openapi3.Sche
 
 	// Return existing component ref for already-promoted named types.
 	if t.Name() != "" {
-		if name, ok := d.typeNames[t]; ok {
-			return openapi3.NewSchemaRef("#/components/schemas/"+name, nil)
+		if ref := d.componentRefLocked(t); ref != nil {
+			return ref
 		}
 	}
 
@@ -175,19 +208,134 @@ func (d *openAPIDocument) resolvedSchemaRefLocked(t reflect.Type) *openapi3.Sche
 	if schema == nil {
 		return nil
 	}
+	if schemaContainsRef(schema, map[*openapi3.Schema]bool{}) {
+		panic(fmt.Sprintf("sprout: OpenAPI schema resolver returned a $ref for %s; resolvers must return inline schemas", t))
+	}
 
 	// Promote named types to shared components so the schema is defined once.
 	if t.Name() != "" && t.PkgPath() != "" {
-		name := schemaComponentName(t)
-		d.typeNames[t] = name
-		if d.doc.Components.Schemas == nil {
-			d.doc.Components.Schemas = openapi3.Schemas{}
-		}
-		d.doc.Components.Schemas[name] = schema
-		return openapi3.NewSchemaRef("#/components/schemas/"+name, nil)
+		return d.addComponentLocked(t, schema)
 	}
 
 	return schema
+}
+
+// componentRefLocked returns a new tracked $ref to t's component, or nil when
+// t has no component yet.
+func (d *openAPIDocument) componentRefLocked(t reflect.Type) *openapi3.SchemaRef {
+	comp, ok := d.components[t]
+	if !ok {
+		return nil
+	}
+	ref := openapi3.NewSchemaRef("#/components/schemas/"+comp.name, nil)
+	comp.refs = append(comp.refs, ref)
+	return ref
+}
+
+// addComponentLocked registers schema as t's component, renames components
+// whose names became ambiguous, and returns a tracked $ref to it.
+func (d *openAPIDocument) addComponentLocked(t reflect.Type, schema *openapi3.SchemaRef) *openapi3.SchemaRef {
+	d.components[t] = &schemaComponent{
+		candidates: componentNameCandidates(t),
+		schema:     schema,
+	}
+	d.assignComponentNamesLocked()
+	return d.componentRefLocked(t)
+}
+
+// assignComponentNamesLocked gives every component the shortest name that is
+// unique within the document. Components start at depth 1 (last package-path
+// segment + type name); every component in a group sharing a name moves one
+// package segment deeper until all names differ. The result depends only on
+// the set of types in the document, never on registration order.
+func (d *openAPIDocument) assignComponentNamesLocked() {
+	depth := make(map[*schemaComponent]int, len(d.components))
+	for {
+		groups := make(map[string][]*schemaComponent, len(d.components))
+		for _, comp := range d.components {
+			name := comp.candidates[depth[comp]]
+			groups[name] = append(groups[name], comp)
+		}
+		collided, grew := false, false
+		for _, group := range groups {
+			if len(group) < 2 {
+				continue
+			}
+			collided = true
+			for _, comp := range group {
+				if depth[comp] < len(comp.candidates)-1 {
+					depth[comp]++
+					grew = true
+				}
+			}
+		}
+		if !collided {
+			break
+		}
+		if !grew {
+			panic("sprout: cannot derive unique OpenAPI component names: " + strings.Join(d.collidingTypesLocked(depth), ", "))
+		}
+	}
+
+	schemas := make(openapi3.Schemas, len(d.components))
+	for _, comp := range d.components {
+		name := comp.candidates[depth[comp]]
+		if comp.name != name {
+			comp.name = name
+			for _, ref := range comp.refs {
+				ref.Ref = "#/components/schemas/" + name
+			}
+		}
+		schemas[name] = comp.schema
+	}
+	d.doc.Components.Schemas = schemas
+}
+
+func (d *openAPIDocument) collidingTypesLocked(depth map[*schemaComponent]int) []string {
+	byName := make(map[string][]string)
+	for t, comp := range d.components {
+		name := comp.candidates[depth[comp]]
+		byName[name] = append(byName[name], t.String()+" ("+t.PkgPath()+")")
+	}
+	var out []string
+	for name, types := range byName {
+		if len(types) > 1 {
+			sort.Strings(types)
+			out = append(out, name+": "+strings.Join(types, " vs "))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// schemaContainsRef reports whether ref or any nested schema is a $ref.
+func schemaContainsRef(ref *openapi3.SchemaRef, seen map[*openapi3.Schema]bool) bool {
+	if ref == nil {
+		return false
+	}
+	if ref.Ref != "" {
+		return true
+	}
+	s := ref.Value
+	if s == nil || seen[s] {
+		return false
+	}
+	seen[s] = true
+	for _, prop := range s.Properties {
+		if schemaContainsRef(prop, seen) {
+			return true
+		}
+	}
+	for _, list := range []openapi3.SchemaRefs{s.AllOf, s.AnyOf, s.OneOf} {
+		for _, item := range list {
+			if schemaContainsRef(item, seen) {
+				return true
+			}
+		}
+	}
+	return schemaContainsRef(s.Items, seen) ||
+		schemaContainsRef(s.Not, seen) ||
+		schemaContainsRef(s.AdditionalProperties.Schema, seen)
 }
 
 func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respType reflect.Type, expectedErrors []reflect.Type) {
@@ -207,10 +355,12 @@ func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respTy
 	}
 	successStatus := extractStatusCode(respType, http.StatusOK)
 	successContentType := "application/json"
-	successSchema := d.schemaRefLocked(respType)
+	var successSchema *openapi3.SchemaRef
 	if responseBody != nil {
 		successContentType = responseBody.contentType
 		successSchema = d.schemaRefLocked(responseBody.fieldType)
+	} else {
+		successSchema = d.schemaRefLocked(respType)
 	}
 
 	responses := openapi3.NewResponses()
@@ -444,19 +594,13 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 			}
 		}
 
-		if ref, ok := d.typeNames[t]; ok {
-			return openapi3.NewSchemaRef("#/components/schemas/"+ref, nil)
+		if ref := d.componentRefLocked(t); ref != nil {
+			return ref
 		}
 
-		name := schemaComponentName(t)
-		d.typeNames[t] = name
-
-		if d.doc.Components.Schemas == nil {
-			d.doc.Components.Schemas = openapi3.Schemas{}
-		}
-
+		// Register before walking fields so recursive types resolve to a $ref.
 		schema := openapi3.NewObjectSchema()
-		d.doc.Components.Schemas[name] = &openapi3.SchemaRef{Value: schema}
+		ref := d.addComponentLocked(t, &openapi3.SchemaRef{Value: schema})
 
 		for _, field := range exportedFields(t) {
 			// Flatten anonymous embedded struct fields into the parent schema,
@@ -500,7 +644,7 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 			sort.Strings(schema.Required)
 		}
 
-		return openapi3.NewSchemaRef("#/components/schemas/"+name, nil)
+		return ref
 	case reflect.Slice, reflect.Array:
 		schema := openapi3.NewArraySchema()
 		schema.Items = d.schemaRefLocked(t.Elem())
@@ -631,15 +775,29 @@ func hasRequiredValidation(tag string) bool {
 	return false
 }
 
+// schemaComponentName returns the default (depth 1) component name for t:
+// last package-path segment + type name.
 func schemaComponentName(t reflect.Type) string {
-	if t.Name() != "" {
-		if pkg := t.PkgPath(); pkg != "" {
-			parts := strings.Split(pkg, "/")
-			return sanitizeName(parts[len(parts)-1] + "_" + t.Name())
-		}
-		return sanitizeName(t.Name())
+	return componentNameCandidates(t)[0]
+}
+
+// componentNameCandidates returns t's possible component names, shortest
+// first: for a type in package a/b/c, c_T, b_c_T, a_b_c_T. Types without a
+// package path have a single candidate.
+func componentNameCandidates(t reflect.Type) []string {
+	if t.Name() == "" {
+		return []string{sanitizeName(t.String())}
 	}
-	return sanitizeName(t.String())
+	pkg := t.PkgPath()
+	if pkg == "" {
+		return []string{sanitizeName(t.Name())}
+	}
+	parts := strings.Split(pkg, "/")
+	candidates := make([]string, len(parts))
+	for i := range parts {
+		candidates[i] = sanitizeName(strings.Join(parts[len(parts)-1-i:], "_") + "_" + t.Name())
+	}
+	return candidates
 }
 
 func sanitizeName(name string) string {

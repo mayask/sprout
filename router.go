@@ -54,6 +54,7 @@ type Config struct {
 
 	openapiInfo     *OpenAPIInfo
 	openapiResolver OpenAPISchemaResolver
+	openapiDocument bool
 }
 
 // Option mutates router configuration before the Sprout instance is constructed.
@@ -220,10 +221,26 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 
 // Mount creates a child router that shares the underlying router and validator.
 // The child inherits configuration such as error handlers, while applying an additional base path prefix.
-func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
+//
+// By default the child registers its routes into the parent's OpenAPI document.
+// Pass WithOpenAPIDocument to give the child (and its descendants) an
+// independent document; WithOpenAPISchemaResolver may accompany it to override
+// the resolver copied from the parent. Routing, middleware, and error handling
+// are unaffected by document isolation.
+func (s *Sprout) Mount(prefix string, config *Config, opts ...Option) *Sprout {
 	var childConfig Config
 	if config != nil {
 		childConfig = *config
+	}
+	// OpenAPI settings for a mount come only from opts; a reused root Config
+	// may carry values applied by NewWithConfig options.
+	childConfig.openapiInfo = nil
+	childConfig.openapiResolver = nil
+	childConfig.openapiDocument = false
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&childConfig)
+		}
 	}
 
 	if childConfig.ErrorHandler == nil {
@@ -235,17 +252,25 @@ func (s *Sprout) Mount(prefix string, config *Config) *Sprout {
 		childConfig.StrictErrorTypes = &strict
 	}
 
-	if childConfig.openapiInfo == nil {
-		childConfig.openapiInfo = s.config.openapiInfo
-	}
-
 	childConfig.BasePath = combineBasePath(s.config.BasePath, prefix, childConfig.BasePath)
+
+	doc := s.openapi
+	switch {
+	case childConfig.openapiDocument:
+		resolver := childConfig.openapiResolver
+		if resolver == nil {
+			resolver = s.openapi.currentResolver()
+		}
+		doc = newOpenAPIDocument(childConfig.openapiInfo, resolver)
+	case childConfig.openapiInfo != nil || childConfig.openapiResolver != nil:
+		panic("sprout: WithOpenAPIInfo/WithOpenAPISchemaResolver on Mount require WithOpenAPIDocument; a mount without it shares its parent's document")
+	}
 
 	child := &Sprout{
 		Router:         s.Router,
 		validate:       s.validate,
 		config:         &childConfig,
-		openapi:        s.openapi,
+		openapi:        doc,
 		parent:         s,
 		order:          s.order,
 		registry:       s.registry,

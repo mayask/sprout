@@ -43,6 +43,8 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
 - [OpenAPI & Swagger](#openapi--swagger)
   - [Customizing Metadata](#customizing-metadata)
   - [Schema Resolver](#schema-resolver)
+  - [Component Names](#component-names)
+  - [Separate Documents for Mounted Routers](#separate-documents-for-mounted-routers)
   - [Sample Server](#sample-server)
 - [Access to httprouter Features](#access-to-httprouter-features)
 - [Complete Example](#complete-example)
@@ -466,7 +468,7 @@ apiV1 := router.Mount("/api", &sprout.Config{BasePath: "/v1"})
 sprout.GET(apiV1, "/status", handleStatus) // -> /api/v1/status
 ```
 
-Pass a full `sprout.Config` when mounting to override behavior per router (for example a distinct error handler or `StrictErrorTypes` flag) while leaving the parent untouched.
+Pass a full `sprout.Config` when mounting to override behavior per router (for example a distinct error handler or `StrictErrorTypes` flag) while leaving the parent untouched. Mounted routers share their parent's OpenAPI document unless they opt into their own; see [Separate Documents for Mounted Routers](#separate-documents-for-mounted-routers).
 
 ## Middleware
 
@@ -636,6 +638,10 @@ Both `schemaRefLocked` (struct, slice, map paths) and `inlineSchemaRefLocked` (i
 
 For **named types** (`t.Name() != ""`), the resolver's output is promoted to a shared component in `doc.Components.Schemas`. Subsequent encounters of the same type (e.g. an enum type used in multiple response structs) get a `$ref` instead of inlining the schema. This keeps the generated OpenAPI document compact and ensures enum schemas are defined once.
 
+#### Inline schemas only
+
+Sprout owns `components/schemas`, so a resolver must return a fully inline schema: no `$ref` at the top level or in any nested `properties`, `items`, `additionalProperties`, `allOf`/`anyOf`/`oneOf`, or `not`. Route registration panics if a resolver returns a `$ref`, because nothing guarantees its target exists in the exported document.
+
 #### Purity constraint
 
 The resolver is called while the OpenAPI document mutex is held. It **must be a pure function**: given the same `reflect.Type`, it must return the same schema (or `nil`). It **must not** call back into Sprout APIs (`RegisterRoute`, `RegisterOpenAPISchemaResolver`, `OpenAPIJSON`, etc.) or it will deadlock.
@@ -669,6 +675,46 @@ router := sprout.NewWithConfig(nil,
 As of the same change that introduced the resolver, `time.Time` is handled as a built-in in `schemaRefLocked` and resolves to `{type: string, format: date-time}`. This replaces the previous behavior of emitting an empty object schema. Applications can override this by returning a non-nil schema for `time.Time` from their resolver—the resolver always takes priority.
 
 The same metadata is available from the `/swagger` endpoint and through `OpenAPIJSON()` / `OpenAPIYAML()`.
+
+### Component Names
+
+Struct types and resolver-promoted named types become components named `<last package segment>_<TypeName>`, for example `payments_PaymentResponse`. When two different types in the same document would get the same name, every type in the clash moves one package segment deeper until the names differ, and existing `$ref`s are updated:
+
+| Type | Component |
+|---|---|
+| `example.com/app/api/payments.PaymentResponse` | `api_payments_PaymentResponse` |
+| `example.com/app/core/payments.PaymentResponse` | `core_payments_PaymentResponse` |
+| `example.com/app/api/users.User` (no clash) | `users_User` |
+
+Names depend only on the set of types in the document, not on registration order. Types that don't clash keep their short names. Adding a type that clashes with an existing one renames both. Registration panics only when two types cannot be told apart even by their full package path (for example, function-local types with the same name in one package).
+
+### Separate Documents for Mounted Routers
+
+A mounted router normally registers its routes into its parent's document. Pass `WithOpenAPIDocument` to give a mount, and every router mounted below it, an independent document with its own metadata, paths, and components:
+
+```go
+router := sprout.NewWithConfig(nil,
+    sprout.WithOpenAPIInfo(sprout.OpenAPIInfo{Title: "Internal API", Version: "1.12.0"}),
+    sprout.WithOpenAPISchemaResolver(enumResolver),
+)
+api := router.Mount("/api/v1", nil) // shares the root document
+
+business := router.Mount("/business/v1", nil,
+    sprout.WithOpenAPIDocument(sprout.OpenAPIInfo{Title: "Business API", Version: "1.0.0"}),
+)
+wallets := business.Mount("/wallets", nil) // uses the business document
+sprout.GET(wallets, "/:id", getWallet)     // documented as /business/v1/wallets/{id}
+
+internalSpec, _ := router.OpenAPIYAML()   // /api/v1/... only
+businessSpec, _ := business.OpenAPIYAML() // /business/v1/... only
+```
+
+- Paths keep their full mounted prefix.
+- Each document contains only the components its own routes reference, so `$ref`s always resolve within that document and component names are deduplicated per document.
+- The document starts with the parent's schema resolver as it is at `Mount` time. Pass `WithOpenAPISchemaResolver` alongside `WithOpenAPIDocument` to use a different one. Later `RegisterOpenAPISchemaResolver` calls affect only the document of the router they are called on.
+- Routing is unaffected: the mount still shares the parent's HTTP router, middleware chain, error handling, and 404/405 behavior.
+- The document is not served over HTTP automatically; only the root document is served at `/swagger`.
+- `WithOpenAPIInfo` or `WithOpenAPISchemaResolver` on `Mount` without `WithOpenAPIDocument` panics, since a shared document's metadata belongs to the root.
 
 ### Sample Server
 
