@@ -391,6 +391,27 @@ Sprout validates both requests **and** responses using [go-playground/validator]
 
 > **Note:** Sprout initializes the validator with `validator.WithRequiredStructEnabled()`, opting into the stricter nesting rules that will become default in validator v11+.
 
+### Defaults
+
+A `default:"…"` tag supplies a value when a field is absent from the query string or from a JSON or form body. Defaults are applied before binding, so any value the client sends wins, and validation runs on the result:
+
+```go
+type ListRequest struct {
+    Page int      `query:"page" default:"1" validate:"min=1"`
+    Sort []string `query:"sort" default:"created_at,id"` // slices: comma-separated
+}
+
+type TokenBody struct {
+    GrantType string `json:"grant_type" default:"client_credentials" validate:"eq=client_credentials"`
+}
+```
+
+- Absent means: query key missing or empty; JSON key missing (or `null` on a non-pointer field); form key missing or empty. When the whole body is missing, a non-pointer body gets its defaults; a pointer body stays `nil`.
+- Defaults convert like query values (scalars, named types, `encoding.TextUnmarshaler`, slices of those). An unconvertible default, a default on a path or header field, on the body field itself, or inside pointers, slices, or maps panics at registration. Nested defaults work through non-pointer structs.
+- In OpenAPI the field gets `default` and is never listed as required.
+
+OpenAPI also infers `enum` from `oneof=a b` and `eq=x` validation on scalar fields, and on slice items after `dive`. Tags combined with `|` are skipped, and fields whose schema is a component (for example a resolver enum) keep it.
+
 ### Common Validation Tags
 
 ```go
@@ -1161,9 +1182,10 @@ The `sprout.Error` type provides detailed error context:
 
 ```go
 type Error struct {
-    Kind    ErrorKind  // Category of error
-    Message string     // Human-readable message
-    Err     error      // Underlying error (can be nil)
+    Kind    ErrorKind   // Category of error
+    Message string      // Human-readable message
+    Err     error       // Underlying error (can be nil)
+    Fields  FieldErrors // Request field failures, for parse and validation errors
 }
 ```
 
@@ -1179,6 +1201,36 @@ if errors.As(err, &sproutErr) {
     }
 }
 ```
+
+#### Field Errors
+
+Parse and validation errors that concern request fields carry `Fields`, one entry per failure, named the way the client sent the value. Use it instead of inspecting `validator.ValidationErrors`, `TypeValidationErrors`, and `ParseParameterError` separately:
+
+```go
+type FieldError struct {
+    Location ParameterSource // "body", "query", "path", or "header"
+    Field    string          // request-relative path
+    Tag      string          // validate tag (required, oneof, ...), "type", or "decode"
+    Param    string          // tag parameter, e.g. "a b" for oneof=a b
+    Kind     reflect.Kind    // kind of the field's Go type, when known
+    Value    any             // offending value (raw input for "decode")
+    Err      error           // cause for "type" and "decode"
+}
+
+if errors.As(err, &sproutErr) {
+    for _, f := range sproutErr.Fields {
+        log.Printf("%s %s: %s %s", f.Location, f.Field, f.Tag, f.Param)
+    }
+}
+```
+
+| Source | `Location` | `Field` example | `Tag` |
+|---|---|---|---|
+| Body field (explicit `body:""` or top-level JSON fields) | `body` | `grant_type`, `items[0].name` (JSON names; the `Body` field itself never appears) | validate tag, `type`, or `decode` |
+| Form body | `body` | the form key (`json` name or `form` override) | validate tag or `decode` |
+| Query / path / header | `query` / `path` / `header` | `wallet_ids[0]`, `id`, `X-Correlation-ID` | validate tag, `type`, or `decode` |
+
+`decode` means the value could not be converted to the field's type (`ErrorKindParse` for parameters, `ErrorKindValidation` for body fields); `type` comes from `TypeValidationFunc`s. Malformed bodies that cannot be attributed to a field have no `Fields`. The validator is configured with the same names, so `validator.ValidationErrors` namespaces also use parameter names for query, path, and header fields.
 
 #### Field-Aware JSON Body Decoding
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 )
 
 // ErrorKind represents the category of error that occurred during request processing.
@@ -50,6 +51,62 @@ type Error struct {
 	Kind    ErrorKind // Category of error
 	Message string    // Human-readable message
 	Err     error     // Underlying error (can be nil)
+
+	// Fields lists request field failures in request terms for parse and
+	// validation errors that can be attributed to fields. Err keeps the
+	// original error (validator.ValidationErrors, TypeValidationErrors,
+	// *ParseParameterError) for existing callers.
+	Fields FieldErrors
+}
+
+// FieldError describes one request field failure using request names: the
+// location the value came from and its request-relative path.
+type FieldError struct {
+	// Location is where the field was sent: body, query, path, or header.
+	Location ParameterSource
+	// Field is the request-relative path: JSON names inside bodies
+	// (grant_type, items[0].name), the form key for form bodies, and the
+	// parameter name for query/path/header values (wallet_ids[0], id,
+	// X-Correlation-ID). Empty when the failure concerns a whole body.
+	Field string
+	// Tag is the failed validate tag (required, oneof, ...), "type" for type
+	// validators, or "decode" when the value could not be converted.
+	Tag string
+	// Param is the validate tag parameter, e.g. "a b" for oneof=a b.
+	Param string
+	// Kind is the kind of the field's Go type, when known.
+	Kind reflect.Kind
+	// Value is the offending value: the decoded value for validation
+	// failures, the raw input for decode failures.
+	Value any
+	// Err is the underlying error for type validator and decode failures.
+	Err error
+}
+
+func (e FieldError) Error() string {
+	field := e.Field
+	if field == "" {
+		field = string(e.Location)
+	}
+	switch {
+	case e.Err != nil:
+		return fmt.Sprintf("%s %s: %v", e.Location, field, e.Err)
+	case e.Param != "":
+		return fmt.Sprintf("%s %s failed on %s=%s", e.Location, field, e.Tag, e.Param)
+	default:
+		return fmt.Sprintf("%s %s failed on %s", e.Location, field, e.Tag)
+	}
+}
+
+// FieldErrors is a list of request field failures.
+type FieldErrors []FieldError
+
+func (e FieldErrors) Error() string {
+	messages := make([]string, len(e))
+	for i, fieldErr := range e {
+		messages[i] = fieldErr.Error()
+	}
+	return strings.Join(messages, "; ")
 }
 
 // Error implements the error interface.
@@ -72,6 +129,7 @@ const (
 	ParameterSourcePath   ParameterSource = "path"
 	ParameterSourceQuery  ParameterSource = "query"
 	ParameterSourceHeader ParameterSource = "header"
+	ParameterSourceBody   ParameterSource = "body"
 )
 
 // ParseParameterError represents an error parsing a path, query, or header parameter.

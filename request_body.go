@@ -104,12 +104,13 @@ func bindRequestBody(
 	reqValue reflect.Value,
 	field *requestBodyField,
 	limit int64,
+	defaults []fieldDefault,
 ) (func() error, *Error) {
 	if field == nil {
 		return nil, nil
 	}
 
-	if req.Body == nil || req.Body == http.NoBody {
+	if req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
 		return nil, nil
 	}
 
@@ -162,6 +163,7 @@ func bindRequestBody(
 	if fieldValue.Kind() == reflect.Pointer {
 		if fieldValue.IsNil() {
 			fieldValue.Set(reflect.New(fieldValue.Type().Elem()))
+			applyDefaults(fieldValue.Elem(), defaults)
 		}
 		target = fieldValue.Interface()
 	} else {

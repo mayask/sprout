@@ -488,11 +488,9 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 		case field.Tag.Get("path") != "":
 			params = append(params, d.parameterFromFieldLocked(field, "path", field.Tag.Get("path"), true))
 		case field.Tag.Get("query") != "":
-			required := hasRequiredValidation(field.Tag.Get("validate"))
-			params = append(params, d.parameterFromFieldLocked(field, "query", field.Tag.Get("query"), required))
+			params = append(params, d.parameterFromFieldLocked(field, "query", field.Tag.Get("query"), isRequiredField(field)))
 		case field.Tag.Get("header") != "":
-			required := hasRequiredValidation(field.Tag.Get("validate"))
-			params = append(params, d.parameterFromFieldLocked(field, "header", field.Tag.Get("header"), required))
+			params = append(params, d.parameterFromFieldLocked(field, "header", field.Tag.Get("header"), isRequiredField(field)))
 		case hasBodyTag(field):
 			continue
 		default:
@@ -503,7 +501,7 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 			if tagInfo.Name == "" || isUnwrapField(field) {
 				continue
 			}
-			if hasRequiredValidation(field.Tag.Get("validate")) && !tagInfo.OmitEmpty {
+			if isRequiredField(field) && !tagInfo.OmitEmpty {
 				bodyRequired = true
 			}
 			hasBody = true
@@ -564,7 +562,7 @@ func (d *openAPIDocument) parameterFromFieldLocked(field reflect.StructField, lo
 		Name:     name,
 		In:       location,
 		Required: required || location == "path",
-		Schema:   d.paramSchemaRefLocked(field.Type),
+		Schema:   decorateFieldSchema(field, d.paramSchemaRefLocked(field.Type)),
 	}
 	if location == "query" && field.Tag.Get("explode") == "false" {
 		if t := derefType(field.Type); t.Kind() == reflect.Slice && !isTextUnmarshaler(t) {
@@ -685,8 +683,8 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 						if embeddedTagInfo.Name == "" || isUnwrapField(embeddedField) {
 							continue
 						}
-						schema.Properties[embeddedTagInfo.Name] = d.inlineSchemaRefLocked(embeddedField.Type)
-						if hasRequiredValidation(embeddedField.Tag.Get("validate")) && !embeddedTagInfo.OmitEmpty {
+						schema.Properties[embeddedTagInfo.Name] = decorateFieldSchema(embeddedField, d.inlineSchemaRefLocked(embeddedField.Type))
+						if isRequiredField(embeddedField) && !embeddedTagInfo.OmitEmpty {
 							schema.Required = append(schema.Required, embeddedTagInfo.Name)
 						}
 					}
@@ -701,8 +699,8 @@ func (d *openAPIDocument) schemaRefLocked(t reflect.Type) *openapi3.SchemaRef {
 			if tagInfo.Name == "" || isUnwrapField(field) {
 				continue
 			}
-			schema.Properties[tagInfo.Name] = d.inlineSchemaRefLocked(field.Type)
-			if hasRequiredValidation(field.Tag.Get("validate")) && !tagInfo.OmitEmpty {
+			schema.Properties[tagInfo.Name] = decorateFieldSchema(field, d.inlineSchemaRefLocked(field.Type))
+			if isRequiredField(field) && !tagInfo.OmitEmpty {
 				schema.Required = append(schema.Required, tagInfo.Name)
 			}
 		}

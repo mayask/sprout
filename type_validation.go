@@ -140,14 +140,8 @@ func walkTypeValidationValue(value reflect.Value, namespace string, funcs []Type
 }
 
 func validationFieldName(field reflect.StructField) string {
-	for _, tagName := range []string{"query", "path", "header", "json"} {
-		name := strings.SplitN(field.Tag.Get(tagName), ",", 2)[0]
-		if name == "-" {
-			continue
-		}
-		if name != "" {
-			return name
-		}
+	if name := requestFieldName(field); name != "" {
+		return name
 	}
 	return field.Name
 }

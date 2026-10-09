@@ -170,12 +170,16 @@ func TestQueryArrayErrors(t *testing.T) {
 		name, query string
 		kind        ErrorKind
 		badValue    string
-		field       string
+		want        FieldError
 	}{
-		{"element parse error reports the element", "pages=1&pages=x", ErrorKindParse, "x", ""},
-		{"default mode does not split commas", "pages=1,2", ErrorKindParse, "1,2", ""},
-		{"slice validation", "currencies=GBP,EUR,USD,CHF", ErrorKindValidation, "", "Currencies"},
-		{"element validation via dive", "currencies=GBP,EURO", ErrorKindValidation, "", "Currencies[1]"},
+		{"element parse error reports the element", "pages=1&pages=x", ErrorKindParse, "x",
+			FieldError{Location: ParameterSourceQuery, Field: "pages", Tag: "decode", Kind: reflect.Int, Value: "x"}},
+		{"default mode does not split commas", "pages=1,2", ErrorKindParse, "1,2",
+			FieldError{Location: ParameterSourceQuery, Field: "pages", Tag: "decode", Kind: reflect.Int, Value: "1,2"}},
+		{"slice validation", "currencies=GBP,EUR,USD,CHF", ErrorKindValidation, "",
+			FieldError{Location: ParameterSourceQuery, Field: "currencies", Tag: "max", Param: "3", Kind: reflect.Slice}},
+		{"element validation via dive", "currencies=GBP,EURO", ErrorKindValidation, "",
+			FieldError{Location: ParameterSourceQuery, Field: "currencies[1]", Tag: "len", Param: "3", Kind: reflect.String, Value: "EURO"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured error
@@ -190,8 +194,16 @@ func TestQueryArrayErrors(t *testing.T) {
 					t.Fatalf("parse error = %+v, want value %q", paramErr, tc.badValue)
 				}
 			}
-			if tc.field != "" && !strings.Contains(captured.Error(), tc.field) {
-				t.Fatalf("validation error %v does not mention %s", captured, tc.field)
+			if len(sproutErr.Fields) != 1 {
+				t.Fatalf("fields = %+v, want one", sproutErr.Fields)
+			}
+			got := sproutErr.Fields[0]
+			got.Err = nil
+			if tc.want.Value == nil {
+				got.Value = nil // slice values are compared by the other fields
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("field error = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

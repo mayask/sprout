@@ -121,15 +121,9 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 
 	validate := validator.New(validator.WithRequiredStructEnabled())
 
-	// Use JSON tag names in validation errors so error messages match the HTTP request field names
-	validate.RegisterTagNameFunc(func(fld reflect.StructField) string {
-		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
-		// skip if tag key says it should be ignored
-		if name == "-" {
-			return ""
-		}
-		return name
-	})
+	// Name validation errors after the request: parameter names for query,
+	// path, and header fields, JSON names elsewhere.
+	validate.RegisterTagNameFunc(requestFieldName)
 
 	s := &Sprout{
 		Router:         httprouter.New(),
@@ -230,6 +224,12 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 			panic(err)
 		}
 	}
+	defaults, err := buildRequestDefaults(typeOf[Req](), requestBody)
+	if err != nil {
+		panic(err)
+	}
+	cfg.defaults = defaults
+	cfg.fields = newRequestFields(typeOf[Req]())
 	responseBody, err := findRequestBodyField(typeOf[Resp]())
 	if err != nil {
 		panic(err)
@@ -370,6 +370,8 @@ type routeConfig struct {
 	requestBodyLimit int64
 	requestBody      *requestBodyField
 	responseBody     *requestBodyField
+	defaults         requestDefaults
+	fields           *requestFields
 	security         []securityRequirement
 	noSecurity       bool
 }
@@ -545,6 +547,9 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 		params := Params(req)
 		var query url.Values // parsed on first query field
 
+		// Defaults first: values present in the request overwrite them.
+		applyDefaults(reqValue, cfg.defaults.request)
+
 		// Iterate through struct fields and populate from different sources
 		for i := 0; i < reqType.NumField(); i++ {
 			field := reqType.Field(i)
@@ -561,16 +566,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 					paramValue = params.ByName(pathTag)
 				}
 				if err := setFieldValue(fieldValue, paramValue); err != nil {
-					handleError(s, w, req, &Error{
-						Kind:    ErrorKindParse,
-						Message: fmt.Sprintf("invalid path parameter '%s'", pathTag),
-						Err: &ParseParameterError{
-							Parameter: pathTag,
-							Source:    ParameterSourcePath,
-							Value:     paramValue,
-							Err:       err,
-						},
-					})
+					handleError(s, w, req, parameterError(ParameterSourcePath, pathTag, paramValue, field.Type, err))
 					return
 				}
 			}
@@ -582,16 +578,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 				}
 				badValue, err := setQueryFieldValue(fieldValue, query[queryTag], field.Tag.Get("explode") == "false")
 				if err != nil {
-					handleError(s, w, req, &Error{
-						Kind:    ErrorKindParse,
-						Message: fmt.Sprintf("invalid query parameter '%s'", queryTag),
-						Err: &ParseParameterError{
-							Parameter: queryTag,
-							Source:    ParameterSourceQuery,
-							Value:     badValue,
-							Err:       err,
-						},
-					})
+					handleError(s, w, req, parameterError(ParameterSourceQuery, queryTag, badValue, field.Type, err))
 					return
 				}
 			}
@@ -600,27 +587,21 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 			if headerTag := field.Tag.Get("header"); headerTag != "" {
 				headerValue := req.Header.Get(headerTag)
 				if err := setFieldValue(fieldValue, headerValue); err != nil {
-					handleError(s, w, req, &Error{
-						Kind:    ErrorKindParse,
-						Message: fmt.Sprintf("invalid header '%s'", headerTag),
-						Err: &ParseParameterError{
-							Parameter: headerTag,
-							Source:    ParameterSourceHeader,
-							Value:     headerValue,
-							Err:       err,
-						},
-					})
+					handleError(s, w, req, parameterError(ParameterSourceHeader, headerTag, headerValue, field.Type, err))
 					return
 				}
 			}
 		}
 
 		if cfg.requestBody != nil {
-			cleanup, bindErr := bindRequestBody(ctx, s, w, req, reqValue, cfg.requestBody, cfg.requestBodyLimit)
+			cleanup, bindErr := bindRequestBody(ctx, s, w, req, reqValue, cfg.requestBody, cfg.requestBodyLimit, cfg.defaults.body)
 			if cleanup != nil {
 				defer cleanup()
 			}
 			if bindErr != nil {
+				if bindErr.Fields == nil {
+					bindErr.Fields = bodyErrors(bindErr.Err)
+				}
 				handleError(s, w, req, bindErr)
 				return
 			}
@@ -643,6 +624,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 
 			if len(body) > 0 {
 				if decodeErr := decodeJSONBody(body, &reqDTO); decodeErr != nil {
+					decodeErr.Fields = bodyErrors(decodeErr.Err)
 					handleError(s, w, req, decodeErr)
 					return
 				}
@@ -655,6 +637,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 				Kind:    ErrorKindValidation,
 				Message: "request validation failed",
 				Err:     err,
+				Fields:  cfg.fields.requestErrors(err),
 			})
 			return
 		}
@@ -663,6 +646,7 @@ func wrap[Req, Resp any](entry *routeEntry, handle Handle[Req, Resp], cfg *route
 				Kind:    ErrorKindValidation,
 				Message: "request type validation failed",
 				Err:     err,
+				Fields:  cfg.fields.requestErrors(err),
 			})
 			return
 		}
