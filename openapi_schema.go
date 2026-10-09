@@ -30,7 +30,7 @@ type OpenAPISchemaResolver func(t reflect.Type) *openapi3.SchemaRef
 // requires WithOpenAPIDocument and replaces the resolver copied from the parent.
 func WithOpenAPISchemaResolver(r OpenAPISchemaResolver) Option {
 	return func(cfg *Config) {
-		cfg.openapiResolver = r
+		cfg.openapi.resolver = r
 	}
 }
 

@@ -22,13 +22,17 @@ type RequestBodyDecoder func(
 type requestBodyDecoderRegistry struct {
 	mu       sync.RWMutex
 	decoders map[string]RequestBodyDecoder
+	// custom marks media types whose built-in decoder was replaced.
+	custom map[string]bool
 }
 
 func newRequestBodyDecoderRegistry() *requestBodyDecoderRegistry {
 	return &requestBodyDecoderRegistry{
 		decoders: map[string]RequestBodyDecoder{
 			defaultRequestContentType: decodeJSONRequestBody,
+			formURLEncodedContentType: decodeFormRequestBody,
 		},
+		custom: map[string]bool{},
 	}
 }
 
@@ -60,6 +64,7 @@ func (r *requestBodyDecoderRegistry) register(contentType string, decoder Reques
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.decoders[mediaType] = decoder
+	r.custom[mediaType] = true
 	return nil
 }
 
@@ -67,6 +72,13 @@ func (r *requestBodyDecoderRegistry) get(contentType string) RequestBodyDecoder 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.decoders[contentType]
+}
+
+// isBuiltin reports whether contentType still uses Sprout's own decoder.
+func (r *requestBodyDecoderRegistry) isBuiltin(contentType string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return !r.custom[contentType]
 }
 
 // RegisterRequestBodyDecoder registers or replaces the consuming decoder for a

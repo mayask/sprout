@@ -28,6 +28,13 @@ type openAPIDocument struct {
 	doc        *openapi3.T
 	components map[reflect.Type]*schemaComponent
 	resolver   OpenAPISchemaResolver
+	// pathPrefix is stripped from documented paths (WithOpenAPIRelativePaths).
+	pathPrefix string
+	// security is the document's top-level requirement; operations matching it
+	// omit their own security.
+	security *securityRequirement
+	// operationIDs maps each operationId to "METHOD path" to reject duplicates.
+	operationIDs map[string]string
 }
 
 // schemaComponent tracks a generated component and every $ref pointing at it,
@@ -74,7 +81,7 @@ type OpenAPIServer struct {
 // WithOpenAPIInfo configures the router's OpenAPI metadata.
 func WithOpenAPIInfo(info OpenAPIInfo) Option {
 	return func(cfg *Config) {
-		cfg.openapiInfo = cloneOpenAPIInfo(info)
+		cfg.openapi.info = cloneOpenAPIInfo(info)
 	}
 }
 
@@ -86,8 +93,19 @@ func WithOpenAPIInfo(info OpenAPIInfo) Option {
 // HTTP automatically. On NewWithConfig it is equivalent to WithOpenAPIInfo.
 func WithOpenAPIDocument(info OpenAPIInfo) Option {
 	return func(cfg *Config) {
-		cfg.openapiInfo = cloneOpenAPIInfo(info)
-		cfg.openapiDocument = true
+		cfg.openapi.info = cloneOpenAPIInfo(info)
+		cfg.openapi.document = true
+	}
+}
+
+// WithOpenAPIRelativePaths documents the routes of a WithOpenAPIDocument mount
+// relative to the mount: /business/v1/auth/token becomes /auth/token, and
+// operation IDs follow (postAuthToken). Declare servers that carry the prefix,
+// e.g. https://api.example.com/business/v1. Routing is unchanged. Without
+// WithOpenAPIDocument it panics.
+func WithOpenAPIRelativePaths() Option {
+	return func(cfg *Config) {
+		cfg.openapi.relativePaths = true
 	}
 }
 
@@ -107,7 +125,8 @@ func cloneOpenAPIInfo(info OpenAPIInfo) *OpenAPIInfo {
 	return &clone
 }
 
-func newOpenAPIDocument(info *OpenAPIInfo, resolver OpenAPISchemaResolver) *openAPIDocument {
+func newOpenAPIDocument(cfg openAPIConfig, pathPrefix string) *openAPIDocument {
+	info := cfg.info
 	components := openapi3.NewComponents()
 	components.Schemas = openapi3.Schemas{}
 
@@ -161,11 +180,15 @@ func newOpenAPIDocument(info *OpenAPIInfo, resolver OpenAPISchemaResolver) *open
 		}
 	}
 
-	return &openAPIDocument{
-		doc:        doc,
-		components: make(map[reflect.Type]*schemaComponent),
-		resolver:   resolver,
+	d := &openAPIDocument{
+		doc:          doc,
+		components:   make(map[reflect.Type]*schemaComponent),
+		resolver:     cfg.resolver,
+		pathPrefix:   pathPrefix,
+		operationIDs: make(map[string]string),
 	}
+	d.setSecurity(cfg.securitySchemes, cfg.security)
+	return d
 }
 
 func (d *openAPIDocument) setResolver(r OpenAPISchemaResolver) {
@@ -338,15 +361,29 @@ func schemaContainsRef(ref *openapi3.SchemaRef, seen map[*openapi3.Schema]bool) 
 		schemaContainsRef(s.AdditionalProperties.Schema, seen)
 }
 
-func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respType reflect.Type, expectedErrors []reflect.Type) {
+func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respType reflect.Type, expectedErrors []reflect.Type, security []securityRequirement) {
 	if d == nil {
 		return
 	}
 
+	if d.pathPrefix != "" {
+		fullPath = strings.TrimPrefix(fullPath, d.pathPrefix)
+		if !strings.HasPrefix(fullPath, "/") {
+			fullPath = "/" + fullPath
+		}
+	}
 	normalizedPath := toOpenAPIPath(fullPath)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	operationID := buildOperationID(method, normalizedPath)
+	operationKey := strings.ToUpper(method) + " " + normalizedPath
+	if previous, ok := d.operationIDs[operationID]; ok && previous != operationKey {
+		panic(fmt.Sprintf("sprout: operationId %q of %s duplicates %s in the same OpenAPI document", operationID, operationKey, previous))
+	}
+	opSecurity := d.operationSecurity(security)
+	d.operationIDs[operationID] = operationKey
 
 	parameters, requestBody := d.buildRequestArtifactsLocked(reqType)
 	responseBody, err := findRequestBodyField(respType)
@@ -357,7 +394,7 @@ func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respTy
 	successContentType := "application/json"
 	var successSchema *openapi3.SchemaRef
 	if responseBody != nil {
-		successContentType = responseBody.contentType
+		successContentType = responseBody.contentTypes[0]
 		successSchema = d.schemaRefLocked(responseBody.fieldType)
 	} else {
 		successSchema = d.schemaRefLocked(respType)
@@ -398,9 +435,10 @@ func (d *openAPIDocument) RegisterRoute(method, fullPath string, reqType, respTy
 	}
 
 	op := &openapi3.Operation{
-		OperationID: buildOperationID(method, normalizedPath),
+		OperationID: operationID,
 		Parameters:  parameters,
 		Responses:   responses,
+		Security:    opSecurity,
 	}
 
 	if requestBody != nil {
@@ -487,14 +525,15 @@ func (d *openAPIDocument) buildRequestArtifactsLocked(reqType reflect.Type) (ope
 	}
 
 	if explicitBody != nil {
+		schema := d.schemaRefLocked(explicitBody.fieldType)
+		content := make(openapi3.Content, len(explicitBody.contentTypes))
+		for _, contentType := range explicitBody.contentTypes {
+			content[contentType] = &openapi3.MediaType{Schema: schema}
+		}
 		return params, &openapi3.RequestBodyRef{
 			Value: &openapi3.RequestBody{
 				Required: explicitBody.required,
-				Content: openapi3.Content{
-					explicitBody.contentType: &openapi3.MediaType{
-						Schema: d.schemaRefLocked(explicitBody.fieldType),
-					},
-				},
+				Content:  content,
 			},
 		}
 	}

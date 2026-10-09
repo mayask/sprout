@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-playground/validator/v10"
 	"github.com/julienschmidt/httprouter"
 )
@@ -31,6 +33,9 @@ type Sprout struct {
 
 	mwMu        sync.RWMutex
 	middlewares []middlewareLayer
+	// openapiSecurity is the documented security default set by
+	// UseOpenAPISecurity; guarded by mwMu.
+	openapiSecurity *securityLayer
 }
 
 // Config holds configuration options for customizing Sprout's behavior.
@@ -54,9 +59,36 @@ type Config struct {
 	// Leading and trailing slashes are handled automatically.
 	BasePath string
 
-	openapiInfo     *OpenAPIInfo
-	openapiResolver OpenAPISchemaResolver
-	openapiDocument bool
+	openapi openAPIConfig
+}
+
+// openAPIConfig holds OpenAPI document settings collected from Options.
+type openAPIConfig struct {
+	info            *OpenAPIInfo
+	resolver        OpenAPISchemaResolver
+	document        bool
+	relativePaths   bool
+	securitySchemes map[string]*openapi3.SecurityScheme
+	security        *securityRequirement
+}
+
+// configuresDocument reports whether any option besides WithOpenAPIDocument
+// targets the router's document.
+func (c openAPIConfig) configuresDocument() bool {
+	return c.info != nil || c.resolver != nil || c.relativePaths || len(c.securitySchemes) > 0 || c.security != nil
+}
+
+// newDocument builds the document a router owns. basePath is the router's
+// normalized base path, stripped from documented paths with relativePaths.
+func (c openAPIConfig) newDocument(basePath string) *openAPIDocument {
+	if c.relativePaths && !c.document {
+		panic("sprout: WithOpenAPIRelativePaths requires WithOpenAPIDocument")
+	}
+	prefix := ""
+	if c.relativePaths {
+		prefix = basePath
+	}
+	return newOpenAPIDocument(c, prefix)
 }
 
 // Option mutates router configuration before the Sprout instance is constructed.
@@ -103,7 +135,7 @@ func NewWithConfig(config *Config, opts ...Option) *Sprout {
 		Router:         httprouter.New(),
 		validate:       validate,
 		config:         config,
-		openapi:        newOpenAPIDocument(config.openapiInfo, config.openapiResolver),
+		openapi:        config.openapi.newDocument(combineBasePath(config.BasePath)),
 		order:          &orderSeq{},
 		registry:       registry,
 		typeValidators: newTypeValidationRegistry(),
@@ -192,12 +224,24 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	if requestBody != nil && cfg.rawRequestBody {
 		panic("sprout: explicit body field cannot be combined with WithRawRequest")
 	}
+	if requestBody != nil && slices.Contains(requestBody.contentTypes, formURLEncodedContentType) &&
+		!isStreamBodyType(requestBody.fieldType) && s.bodyDecoders.isBuiltin(formURLEncodedContentType) {
+		if err := validateFormBodyType(requestBody.fieldType); err != nil {
+			panic(err)
+		}
+	}
 	responseBody, err := findRequestBodyField(typeOf[Resp]())
 	if err != nil {
 		panic(err)
 	}
 	if responseBody != nil && !isFileBodyType(responseBody.fieldType) {
 		panic("sprout: explicit response body fields currently require *FileBody")
+	}
+	if responseBody != nil && len(responseBody.contentTypes) != 1 {
+		panic("sprout: explicit response body fields must declare exactly one contentType")
+	}
+	if cfg.noSecurity && len(cfg.security) > 0 {
+		panic("sprout: WithSecurity cannot be combined with WithoutSecurity")
 	}
 	cfg.requestBody = requestBody
 	cfg.responseBody = responseBody
@@ -206,7 +250,13 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 	fullPath := joinPath(s.config.BasePath, path)
 
 	if s.openapi != nil {
-		s.openapi.RegisterRoute(method, fullPath, typeOf[Req](), typeOf[Resp](), cfg.expectedErrors)
+		security := cfg.security
+		if !cfg.noSecurity && len(security) == 0 {
+			if inherited := s.inheritedOpenAPISecurity(); inherited != nil {
+				security = []securityRequirement{*inherited}
+			}
+		}
+		s.openapi.RegisterRoute(method, fullPath, typeOf[Req](), typeOf[Resp](), cfg.expectedErrors, security)
 	}
 
 	entry := &routeEntry{
@@ -226,9 +276,10 @@ func handle[Req, Resp any](s *Sprout, method, path string, h Handle[Req, Resp], 
 //
 // By default the child registers its routes into the parent's OpenAPI document.
 // Pass WithOpenAPIDocument to give the child (and its descendants) an
-// independent document; WithOpenAPISchemaResolver may accompany it to override
-// the resolver copied from the parent. Routing, middleware, and error handling
-// are unaffected by document isolation.
+// independent document. Other OpenAPI options (schema resolver, relative
+// paths, security schemes and default) may accompany it; without it they
+// panic. Routing, middleware, and error handling are unaffected by document
+// isolation.
 func (s *Sprout) Mount(prefix string, config *Config, opts ...Option) *Sprout {
 	var childConfig Config
 	if config != nil {
@@ -236,9 +287,7 @@ func (s *Sprout) Mount(prefix string, config *Config, opts ...Option) *Sprout {
 	}
 	// OpenAPI settings for a mount come only from opts; a reused root Config
 	// may carry values applied by NewWithConfig options.
-	childConfig.openapiInfo = nil
-	childConfig.openapiResolver = nil
-	childConfig.openapiDocument = false
+	childConfig.openapi = openAPIConfig{}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&childConfig)
@@ -258,14 +307,14 @@ func (s *Sprout) Mount(prefix string, config *Config, opts ...Option) *Sprout {
 
 	doc := s.openapi
 	switch {
-	case childConfig.openapiDocument:
-		resolver := childConfig.openapiResolver
-		if resolver == nil {
-			resolver = s.openapi.currentResolver()
+	case childConfig.openapi.document:
+		docConfig := childConfig.openapi
+		if docConfig.resolver == nil {
+			docConfig.resolver = s.openapi.currentResolver()
 		}
-		doc = newOpenAPIDocument(childConfig.openapiInfo, resolver)
-	case childConfig.openapiInfo != nil || childConfig.openapiResolver != nil:
-		panic("sprout: WithOpenAPIInfo/WithOpenAPISchemaResolver on Mount require WithOpenAPIDocument; a mount without it shares its parent's document")
+		doc = docConfig.newDocument(childConfig.BasePath)
+	case childConfig.openapi.configuresDocument():
+		panic("sprout: OpenAPI document options on Mount require WithOpenAPIDocument; a mount without it shares its parent's document")
 	}
 
 	child := &Sprout{
@@ -321,6 +370,21 @@ type routeConfig struct {
 	requestBodyLimit int64
 	requestBody      *requestBodyField
 	responseBody     *requestBodyField
+	security         []securityRequirement
+	noSecurity       bool
+}
+
+// RouteOptions combines several route options into one, applied in order.
+// Use it to bundle options that must always travel together, such as an
+// authorization middleware and the scopes it enforces in the documentation.
+func RouteOptions(opts ...RouteOption) RouteOption {
+	return func(cfg *routeConfig) {
+		for _, opt := range opts {
+			if opt != nil {
+				opt(cfg)
+			}
+		}
+	}
 }
 
 // WithErrors registers expected error types for validation and documentation

@@ -9,16 +9,18 @@ import (
 	"mime"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 )
 
 const defaultRequestContentType = "application/json"
 
 type requestBodyField struct {
-	index       int
-	fieldType   reflect.Type
-	contentType string
-	required    bool
+	index     int
+	fieldType reflect.Type
+	// contentTypes lists accepted media types in declaration order.
+	contentTypes []string
+	required     bool
 }
 
 var streamBodyPtrType = reflect.TypeFor[*StreamBody]()
@@ -45,13 +47,19 @@ func findRequestBodyField(reqType reflect.Type) (*requestBodyField, error) {
 			return nil, fmt.Errorf("request type %s declares multiple body fields", reqType)
 		}
 
-		contentType := strings.TrimSpace(field.Tag.Get("contentType"))
-		if contentType == "" {
-			contentType = defaultRequestContentType
+		rawContentTypes := field.Tag.Get("contentType")
+		if strings.TrimSpace(rawContentTypes) == "" {
+			rawContentTypes = defaultRequestContentType
 		}
-		mediaType, _, err := mime.ParseMediaType(contentType)
-		if err != nil {
-			return nil, fmt.Errorf("request body field %s has invalid contentType %q: %w", field.Name, contentType, err)
+		var contentTypes []string
+		for _, contentType := range strings.Split(rawContentTypes, ",") {
+			mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+			if err != nil {
+				return nil, fmt.Errorf("request body field %s has invalid contentType %q: %w", field.Name, rawContentTypes, err)
+			}
+			if !slices.Contains(contentTypes, mediaType) {
+				contentTypes = append(contentTypes, mediaType)
+			}
 		}
 		switch field.Type {
 		case streamBodyType:
@@ -61,10 +69,10 @@ func findRequestBodyField(reqType reflect.Type) (*requestBodyField, error) {
 		}
 
 		result = &requestBodyField{
-			index:       i,
-			fieldType:   field.Type,
-			contentType: mediaType,
-			required:    hasRequiredValidation(field.Tag.Get("validate")),
+			index:        i,
+			fieldType:    field.Type,
+			contentTypes: contentTypes,
+			required:     hasRequiredValidation(field.Tag.Get("validate")),
 		}
 	}
 	return result, nil
@@ -109,10 +117,10 @@ func bindRequestBody(
 	if err != nil || mediaType == "" {
 		return req.Body.Close, &Error{Kind: ErrorKindParse, Message: "invalid request content type", Err: err}
 	}
-	if mediaType != field.contentType {
+	if !slices.Contains(field.contentTypes, mediaType) {
 		return req.Body.Close, &Error{
 			Kind:    ErrorKindParse,
-			Message: fmt.Sprintf("unsupported request content type %q; expected %q", mediaType, field.contentType),
+			Message: fmt.Sprintf("unsupported request content type %q; expected one of %q", mediaType, field.contentTypes),
 		}
 	}
 

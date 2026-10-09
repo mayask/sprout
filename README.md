@@ -45,6 +45,8 @@ A type-safe HTTP router for Go that provides automatic validation and parameter 
   - [Schema Resolver](#schema-resolver)
   - [Component Names](#component-names)
   - [Separate Documents for Mounted Routers](#separate-documents-for-mounted-routers)
+  - [Relative Paths](#relative-paths)
+  - [Security](#security)
   - [Sample Server](#sample-server)
 - [Access to httprouter Features](#access-to-httprouter-features)
 - [Complete Example](#complete-example)
@@ -255,8 +257,9 @@ wraps the body in `http.MaxBytesReader`; reads beyond the limit return
 Consuming body formats can be added through the decoder registry. Decoders
 receive the request context, a body reader, parsed Content-Type parameters, and
 the target value. They may return cleanup for multipart temporary files or
-other resources. JSON is registered by default; `StreamBody` bypasses this
-registry because it must remain unread until the handler.
+other resources. JSON and `application/x-www-form-urlencoded` are registered by
+default; `StreamBody` bypasses this registry because it must remain unread until
+the handler.
 
 ```go
 router.RegisterRequestBodyDecoder("application/xml", func(
@@ -272,6 +275,31 @@ router.RegisterRequestBodyDecoder("application/xml", func(
 The generated OpenAPI operation declares the configured media type with a
 `string`/`binary` schema. An explicit `body` field cannot be combined with
 `WithRawRequest()`.
+
+#### Multiple Content Types and Form Bodies
+
+A body field may accept several media types, separated by commas. The decoder is chosen by the request's `Content-Type`; any other type returns `400`, and the OpenAPI request body lists every accepted type with the same schema:
+
+```go
+type TokenRequest struct {
+    Body TokenBody `body:"" contentType:"application/json,application/x-www-form-urlencoded"`
+}
+
+type TokenBody struct {
+    GrantType    string `json:"grant_type" validate:"required,eq=client_credentials"`
+    ClientID     string `json:"client_id" validate:"required"`
+    ClientSecret string `json:"client_secret" validate:"required"`
+}
+```
+
+The built-in `application/x-www-form-urlencoded` decoder:
+
+- maps keys to fields by `json` tag name, overridable with a `form` tag (`form:"-"` skips a field);
+- ignores unknown keys (e.g. OAuth clients sending `scope`);
+- converts values like query parameters: scalars, named types, `encoding.TextUnmarshaler`, and slices from repeated keys; embedded structs are flattened;
+- reports conversion failures as per-field validation errors, like JSON bodies.
+
+Form data is flat, so registering a route whose form body has nested structs, maps, or slices of structs panics. Replacing the decoder with `RegisterRequestBodyDecoder` lifts this check. Response bodies (`*FileBody`) still declare exactly one content type.
 
 #### Nested Objects in Request Body
 
@@ -537,6 +565,14 @@ sprout.GET(api, "/reports", func(ctx context.Context, req *ReportRequest) (*Repo
 	}
 	next(nil)
 }))
+
+// Bundle options that must always travel together into one RouteOption.
+func requireScope(scope string) sprout.RouteOption {
+	return sprout.RouteOptions(
+		sprout.WithMiddleware(acl.Require(scope)),
+		sprout.WithSecurity("oauth2", scope),
+	)
+}
 ```
 
 ### Falling Through with `ErrNext`
@@ -730,12 +766,78 @@ internalSpec, _ := router.OpenAPIYAML()   // /api/v1/... only
 businessSpec, _ := business.OpenAPIYAML() // /business/v1/... only
 ```
 
-- Paths keep their full mounted prefix.
+- Paths keep their full mounted prefix unless [`WithOpenAPIRelativePaths`](#relative-paths) is set.
 - Each document contains only the components its own routes reference, so `$ref`s always resolve within that document and component names are deduplicated per document.
 - The document starts with the parent's schema resolver as it is at `Mount` time. Pass `WithOpenAPISchemaResolver` alongside `WithOpenAPIDocument` to use a different one. Later `RegisterOpenAPISchemaResolver` calls affect only the document of the router they are called on.
 - Routing is unaffected: the mount still shares the parent's HTTP router, middleware chain, error handling, and 404/405 behavior.
 - The document is not served over HTTP automatically; only the root document is served at `/swagger`.
-- `WithOpenAPIInfo` or `WithOpenAPISchemaResolver` on `Mount` without `WithOpenAPIDocument` panics, since a shared document's metadata belongs to the root.
+- OpenAPI document options (`WithOpenAPIInfo`, `WithOpenAPISchemaResolver`, `WithOpenAPIRelativePaths`, `WithOpenAPISecurityScheme`, `WithOpenAPISecurity`) on `Mount` without `WithOpenAPIDocument` panic, since a shared document belongs to its owner.
+
+### Relative Paths
+
+An API published on its own usually documents paths without the mount prefix. Add `WithOpenAPIRelativePaths()` next to `WithOpenAPIDocument` and declare servers that carry the prefix:
+
+```go
+business := router.Mount("/business/v1", nil,
+    sprout.WithOpenAPIDocument(sprout.OpenAPIInfo{
+        Title:   "Business API",
+        Servers: []sprout.OpenAPIServer{{URL: "https://api.example.com/business/v1"}},
+    }),
+    sprout.WithOpenAPIRelativePaths(),
+)
+sprout.POST(business, "/auth/token", exchangeToken) // documented as /auth/token, operationId postAuthToken
+```
+
+Routing still uses the full path. Operation IDs are derived from the documented path, and two routes producing the same operation ID in one document (e.g. `/items/:id` and `/items/id`) panic at registration.
+
+### Security
+
+Declare security schemes with kin-openapi types, then document which routes need them. These options only describe security; enforce it in middleware.
+
+```go
+business := router.Mount("/business/v1", nil,
+    sprout.WithOpenAPIDocument(info),
+    sprout.WithOpenAPISecurityScheme("oauth2", &openapi3.SecurityScheme{
+        Type: "oauth2",
+        Flows: &openapi3.OAuthFlows{ClientCredentials: &openapi3.OAuthFlow{
+            TokenURL: "https://api.example.com/business/v1/auth/token",
+            Scopes:   map[string]string{"payments:view": "View payments"},
+        }},
+    }),
+    sprout.WithOpenAPISecurity("oauth2"), // top-level security
+)
+
+sprout.POST(business, "/auth/token", exchangeToken) // before any default: security: []
+
+business.Use(authMiddleware)
+business.UseOpenAPISecurity("oauth2") // routes registered from here on
+
+sprout.GET(business, "/me", getMe)                                         // inherits the top level
+sprout.GET(business, "/payments", listPayments, sprout.WithSecurity("oauth2", "payments:view"))
+sprout.GET(business, "/status", status, sprout.WithoutSecurity())         // security: []
+```
+
+```yaml
+security:
+  - oauth2: []
+paths:
+  /auth/token:
+    post:
+      security: []
+  /me:
+    get: {}            # no security field: the top level applies
+  /payments:
+    get:
+      security:
+        - oauth2: [payments:view]
+```
+
+- `WithOpenAPISecurityScheme(name, scheme)` adds `components.securitySchemes[name]`; extensions (`x-…`) on schemes and flows are preserved.
+- `WithOpenAPISecurity(scheme, scopes...)` sets the document's top-level requirement. Operations whose security equals it omit their own field; every other operation is explicit, so routes without security get `security: []`. It does not secure routes by itself.
+- `UseOpenAPISecurity(scheme, scopes...)` sets the default for routes registered afterwards on the router and its children, like `Use`. A later call replaces it. Defaults do not cross `WithOpenAPIDocument` boundaries.
+- `WithSecurity(scheme, scopes...)` replaces the default for one route; repeat it to list alternatives. `WithoutSecurity()` marks a route public.
+- Unknown scheme names, scopes not declared by the scheme's OAuth2 flows, and scopes on non-OAuth2/OpenID Connect schemes panic at registration.
+- Relative `tokenUrl`s resolve against the server URL with standard URL rules (`/auth/token` drops the server path); absolute URLs avoid surprises.
 
 ### Sample Server
 

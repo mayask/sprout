@@ -58,7 +58,7 @@ func writeExplicitResponseBody(
 	}
 
 	if w.Header().Get("Content-Type") == "" {
-		w.Header().Set("Content-Type", field.contentType)
+		w.Header().Set("Content-Type", field.contentTypes[0])
 	}
 	body.serveHTTP(w, req)
 	return true, nil
